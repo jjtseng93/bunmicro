@@ -1,0 +1,359 @@
+bunmicro 1:1 parity TODO
+=========================
+
+Goal
+----
+Make bunmicro self-contained and behaviorally close to the Go micro editor while avoiding native bindings except where explicitly allowed. Runtime assets must stay under bunmicro/.
+
+Current handoff notes
+---------------------
+[x] --cat / --ccat / --bat / --glow flag: syntax-highlight file(s) and write to stdout, then exit.
+    - Uses the same detectSyntax path as the editor (path → firstLine/header → signature).
+    - .md files rendered via Bun.markdown.ansi.
+    - Falls back to raw output when no syntax definition matches.
+    - Reads from stdin when no positional args are given; header/shebang/signature detection still applies.
+    - Always emits ANSI codes regardless of TTY state.
+    - -profile removed from usage (flag parsed but never implemented in Go either; -debug kept for future log.txt work).
+[x] Recent editor UX parity implemented:
+    - Tab autocomplete candidate row cycles highlight correctly and only highlights the selected candidate text.
+    - Tab autocomplete single-match case fixed: was silently no-op due to acHas=false; now inserts suffix directly.
+    - Mouse click on autocomplete candidates no longer moves the editor cursor to the click location.
+    - Rapid arrow-key chunks are split into individual key events; Shift+arrows create/extend selection.
+    - Mouse wheel scroll moves viewport without moving the cursor, and the cursor may scroll offscreen.
+    - Ctrl-R toggles line numbers/ruler.
+    - Ctrl-D duplicates line (no selection) or selection (has selection); Go DuplicateLine/Duplicate parity.
+    - Ctrl-L opens command bar pre-filled with "goto " (Go parity).
+    - Ctrl-Up/Ctrl-Down jump to start/end of file (Go CursorStart/CursorEnd parity).
+    - Shift-Ctrl-Up/Shift-Ctrl-Down extend selection to start/end of file.
+    - Ctrl-O now opens command bar pre-filled with "open " (consistent with Ctrl-H pre-filling "replace ").
+    - openCommandMode() accepts optional initial string parameter.
+    - Matchbrace highlights (), {}, [] and statusline column click cycles between matched braces when cursor is on a matched brace.
+    - Ctrl-C/Ctrl-X/Ctrl-V/Ctrl-Y work for line and selection clipboard flows; external clipboard failures fall back to the internal register.
+    - Copy/cut/paste and similar status messages render on a standalone info row above the statusline.
+[x] replace/replaceall commands aligned with Go behavior:
+    - Flags: -a (replace all at once), -l (literal/no-regex, uses RegExp.escape).
+    - replace without -a shows interactive Y/N prompt per match (Perform replacement (y,n,esc)).
+    - replaceall is an alias for replace -a; both share the same code path.
+    - Regex compiled with (?m) always and (?i) when ignorecase setting is true.
+    - Capture groups ($1, $2) supported in replacement string (non-literal mode).
+    - Replace-to can be empty string via replace foo "" / replace foo '' / replace foo.
+    - Message format matches Go: "Replaced N occurrences of SEARCH" / "Nothing matched SEARCH" / "+ in selection".
+    - Selection-aware: if a selection is active, search/replace is bounded to that range.
+    - shellSplit now correctly emits empty tokens for "" and '' (POSIX-compliant quoted empty strings).
+[x] Prompt history persisted to disk (Go parity):
+    - Saved to configDir/buffers/history.json (JSON; Go uses gob binary, not shared between versions).
+    - savehistory setting (default true) controls load/save; added to DEFAULT_GLOBAL_ONLY_SETTINGS.
+    - Loaded at startup; saved on exit via async stop() using Bun.file/Bun.write.
+    - Deduplication: earlier duplicate is removed, new entry appended to tail (matches Go behavior).
+    - Max 100 entries per prompt type (matches Go limit).
+[x] Mouse click on Unicode (wide) characters now correctly positions cursor (visualColToCharIdx).
+[x] Horizontal scroll for wide Unicode chars fixed: updateScrollForPane now uses displayWidth-based
+    visual column comparison instead of raw char index arithmetic (charIdxForScrollRight helper).
+[x] Info bar message (buf.message) is cleared on every input event, fixing the bug where a "Found:"
+    or similar message from find/search would permanently persist after the next keystroke.
+[x] Opening an HTTP/HTTPS URL then saving now prompts "Save as:" pre-filled with the URL basename
+    instead of trying to write to the URL string as a local path.
+[x] reopen command supports HTTP/HTTPS buffers by re-fetching through the same backend as open.
+[x] -version flag output now includes TTS command detection result.
+[x] External file reload behavior implemented for active editor buffers: mtime tracking on open/save, reload setting prompt/auto/disabled, prompt text "File changed, reload? (y,n,esc)", y reloads from disk, n accepts disk mtime, esc disables future reload prompts for that buffer.
+[x] Readonly status indication: existing files without write permission and buffers with readonly option render the statusline filename in red.
+[x] Built-in comment behavior implemented natively: comment command, Alt-/ and Ctrl-_ key parsing, single-line and selection toggle, filetype-based comment.type fallback, and settings.json plugin option registration after plugin load.
+[x] Syntax highlight performance improved for large/minified files:
+    - Render now uses per-buffer line highlight result/state cache instead of recomputing from line 0 for every visible line.
+    - Dirty cache invalidation is wired through main editing paths; structural edits force invalidation to avoid line-index drift.
+    - Lines over 300 chars keep their old cached highlight/state when dirtied, mark the row dirty, and defer full rehighlight until Esc.
+    - Dirty long lines render red in the gutter and in the statusline row field.
+    - Startup and Esc rehighlight show colorful bottom progress by highlighted character count, wrapped with Bun.wrapAnsi.
+[!] Known follow-up: syntax detection still needs Go parity. todo.txt can be misdetected as filetype B because signatures are considered globally instead of only disambiguating filename/header matches.
+[!] Known tool note: apply_patch is currently unreliable in this environment; use Bun scripts for small file edits.
+
+Screen / tcell parity
+---------------------
+[x] Replace current whole-string renderer with CellBuffer-backed rendering and diff flush.
+[x] Implement Screen.SetContent/GetContent/Fill/Show equivalents over CellBuffer.
+[x] Preserve per-cell style and wide-char handling: Cell.filler for double-width right-half, Screen.Show skips filler cells, putText/putCells advance col by visual width, setFillerContent added to Screen/CellBuffer.
+[ ] Preserve combining chars (zero-width combining marks stored alongside base char).
+[ ] Implement fake cursor and multi-cursor reverse styling behavior.
+[ ] Add raw escape registration/unregistration equivalent to tcell RegisterRawSeq.
+[~] Add complete bracketed paste event handling across split input chunks.
+    Done: bracketed paste events insert text, replace active selection, and show an info row paste status message.
+    Remaining: robust handling when bracketed paste start/end sequences arrive split across stdin chunks.
+[~] Add robust partial escape-sequence buffering for keyboard/mouse input.
+    Done: lone ESC buffering exists; parseInputEvents now splits multiple key sequences in one chunk and supports Shift+arrows, Ctrl-A/C/V/X, Ctrl-R.
+    Remaining: general partial CSI/mouse sequence buffering across chunks and raw escape binding parity.
+[~] Expand mouse support: drag selection actions, double click, right/middle click, wheel horizontal if available.
+    Done: mouse pane focus, drag selection, status/tab/suggestion clicks, wheel scroll without moving cursor and with cursor allowed offscreen.
+    Remaining: double click, right/middle actions, horizontal wheel, exact selection/action parity.
+[ ] Add terminal focus/paste/mouse mode lifecycle edge-case cleanup on crash.
+[ ] Add Windows/Android terminal capability fallbacks where ANSI/mouse sequences differ.
+
+Buffer / editing model
+----------------------
+[ ] Replace prototype BufferModel with BufferCore or merge them into one complete buffer implementation.
+[ ] Implement line array equivalent with efficient insert/delete/replace for large files.
+[~] Implement cursor object parity: selections, visual x, multi-cursor, relocation, word movement.
+    Done: basic single selection via mouse drag and Shift+arrows; selection rendering; copy/cut/delete/replace selection paths; Ctrl-Left/Right word movement; Shift-Ctrl-Left/Right extend selection by word; autoindent on newline (copies leading whitespace of current line, places cursor after indent).
+    Remaining: full cursor object parity, Ctrl-Backspace delete-word, visual x tracking, multi-cursor, relocation semantics.
+[~] Implement undo/redo stack parity, including grouped edits.
+    Done: Ctrl-Z undo / Ctrl-Y redo; per-keypress snapshot with consecutive-char coalescing (up to 500 entries); Ctrl-X/K/V/paste/backspace/delete/enter each save their own snapshot; redoStack is cleared on any new edit.
+    Done: save-point tracking — each snapshot carries a serial; save() records _savedSerial; undo/redo clears modified flag when serial matches save point.
+    Remaining: grouped edits for large operations, undo history persistence.
+[~] Implement save options: fileformat, encoding, eofnewline, rmtrailingws, mkparents, autosu/sucmd behavior.
+    Done: eofnewline save behavior exists; fileformat status/toggle exists; encoding decode/reopen supports Bun TextDecoder labels including common CJK encodings, and statusline encoding click pre-fills reopen with encoding completion.
+    Done: saving a non-UTF-8-decoded buffer prompts "Save in UTF-8?(y,n)" before converting the buffer to UTF-8 on disk.
+    Remaining: non-UTF-8 save/encode, rmtrailingws, mkparents, autosu/sucmd, full fileformat behavior parity.
+[ ] Implement backup recovery and permbackup behavior.
+[~] Implement savecursor and saveundo serialization.
+    Done: savecursor saves cursor position to configDir/buffers/cursor_state.json on Ctrl-S and on quit; position is restored when re-opening the same file; syncs from Go micro settings.json.
+    Done: savecursor restore now vertically centers the viewport on the restored cursor position (deferred via _pendingCenterScroll flag, resolved on first render after layout is computed; handles softwrap/non-softwrap via _ttsScrollToCenter).
+    Remaining: saveundo serialization.
+[x] Implement reload prompt/auto/disabled behavior when file changes externally.
+[x] Implement readonly handling (full):
+    - readonly status indication: filename rendered red for non-writable files / readonly buffers.
+    - save blocked with "Can't save under readonly mode" for all save paths (Ctrl-S, save command, save <file>).
+    - save -f bypasses readonly check (force save).
+    - open -r flag opens file in readonly mode; combinable with -f (open -f -r / open -r -f).
+    - set readonly is buffer-local only (LOCAL_SETTINGS); never written to global config file.
+    - LOCAL_SETTINGS = {readonly, filetype}: set command treats these as setlocal; saveSettings() strips them.
+[x] Implement diff base and diff gutter rendering fully.
+    SetDiffBase/getDiffMarkers/computeDiffMarkers all implemented; diff.js JS plugin fetches git HEAD on onBufferOpen;
+    gutter renders ▌(add/mod) and ▔(del) markers using diff-added/diff-modified/diff-deleted colorscheme styles.
+[~] Improve Unicode: East Asian width (isWideCodePoint covers CJK/Hangul/Kana/Emoji ranges, charWidth returns 2), surrogate-pair-safe moveLeft/moveRight/backspace/deleteForward/prompt-backspace all use codePointAt/charCodeAt surrogate detection, renderHighlightedCells iterates by code point not code unit.
+    Done: mouse click column-to-char mapping uses visualColToCharIdx (wide-char aware); horizontal scroll uses displayWidth comparison and charIdxForScrollRight instead of raw char index arithmetic.
+    Remaining: grapheme cluster support (combining marks, ZWJ sequences), visual x vs byte x cursor split.
+
+Actions / commands / keybindings
+--------------------------------
+[~] Port full action command registry from internal/action/defaults.go and command.go.
+    Done: all 122 non-macro/non-multicursor BufPane actions registered in ACTIONS map (js-bridge.js).
+    Done: act / action command — calls any registered action by name; Tab-completes action names.
+    Done: raw command — toggles raw key inspection mode; each keypress shows key name + hex in statusbar; ESC exits.
+    Done: key bindings refactored to call registered actions where applicable.
+    Done: ctrl-w pane switch fixed (KEY_MAP was missing \x17 → "ctrl-w" mapping).
+    Done: ctrl-k (CutLine) cursor now resets to column 0 after cut, matching Go parity.
+    Done: alt-k/alt-j = MoveLinesUp/Down; alt-p/alt-t = PreviousTab/NextTab.
+    Missing (non-macro/multicursor): DeleteSubWordLeft, DeleteSubWordRight.
+    Remaining: bind/unbind runtime keybinding system, keybinding parser/tree, platform default binding files.
+[ ] Port keybinding parser/tree, including raw escape bindings.
+[ ] Port default keybindings for all supported platforms.
+[~] Implement command bar, completions, history, and help/options completions.
+    Done: prompt history (in-memory and persisted to disk), command-name completion, set/setlocal option-name completion, file completion, buffer Tab autocomplete candidate bar with cycling and mouse selection.
+    Done: set colorscheme / theme command now have Tab completion listing all available colorschemes from runtime registry (context.runtime was missing from context — fixed).
+    Done: toggle/tog/togglelocal completion lists only toggleable options (boolean + 2-choice OPTION_CHOICES).
+    Done: reset completion lists all valid option names.
+    Done: help topic completion — Tab after "help " lists all runtime help files and -vsplit/-hsplit flags.
+    Remaining: richer option value completion, complete command-specific completion parity.
+[x] Implement Ctrl-E CommandMode command bar with command/history/completion behavior.
+[x] Implement filename completion in open/save prompts.
+[~] Implement command execution semantics: set/setlocal, bind/unbind, open, save, quit, replace, find, help, plugin commands, etc.
+    Done: set/setlocal, open, save, quit/q, goto, find, replace (interactive Y/N + -a/-l flags), replaceall, cd/pwd, tab, vsplit/hsplit, term, tts, help.
+    Done: toggle/tog/togglelocal (Go parity): flips boolean options, cycles 2-choice options, errors on non-toggleable; toggle/tog save globally, togglelocal is buffer-local only.
+    Done: reset — resets option to default value, saves globally; handles colorscheme reload.
+    Done: theme command as alias for set colorscheme: loads and applies colorscheme immediately, saves to settings.json.
+    Done: set colorscheme now applies immediately (was broken: context.colorscheme not updated at runtime).
+    Done: jump — relative line jump from current cursor position (±offset).
+    Done: tabmove — moves current tab to absolute (1-based) or relative (±n) position.
+    Done: tabswitch — switches to tab by 1-based index or name.
+    Done: textfilter — pipes selection (or current line) through shell command, replaces with stdout.
+    Done: reload — reloads syntax definitions and colorscheme from runtime, re-attaches syntax to all open buffers.
+    Done: run — fixed to background execution (stdout+stderr shown in infobar), matching Go behavior.
+    Done: open command now replaces current pane buffer (Go parity); prompts Save?(y,n,esc) if modified.
+    Done: exit command — exit [code], skips save prompts, calls stop(code) directly.
+    Done: help command fully ported — topic args, -vsplit/-hsplit flags, helpsplit setting (default hsplit),
+          multiple topics force splits, "Sorry, no help for <topic>" error, replace-in-pane when already a help pane.
+    Done: open -r flag opens readonly; open -f -r combinable; save -f force-saves bypassing readonly.
+    Done: ttsspeed / ttspitch commands — set TTS_SPEED / TTS_PITCH env vars; no-arg shows current value.
+    Remaining: bind/unbind (stubs only — keybinding system not yet implemented), plugin commands, log/raw/help flags and full Go command semantics.
+[x] Implement basic open/save/find/goto/quit prompt actions in the prototype editor loop.
+[~] Implement tabs, splits, panes, BufPane/InfoPane/RawPane/TermPane APIs.
+    Done: vsplit/hsplit commands (Pane+SplitNode+Tab tree), term command (PTY pane),
+    Ctrl-W focus cycling, mouse pane focus, split divider rendering.
+    Done: Ctrl-Q / quit command now closes only the current pane when multiple panes exist in the tab;
+          falls back to closing the whole tab (or exiting) only when it is the last pane.
+[x] Implement basic Ctrl-T AddTab, previous/next tab switching, clickable tabbar, and Ctrl-O replacement of empty untitled tabs.
+[~] Implement statusline formatting expansion and status info functions fully.
+    Done: basic status row with filename/modified mark, cursor position, filetype, fileformat, encoding, keymenu toggle, clickable zones; messages now render in a separate info row above statusline.
+    Done: first three statusline field separators changed from | to ⧉ € $ (each clickable: ctrl-t addtab, ctrl-e cmdmode, ctrl-b shellmode).
+    Remaining: statusformat expansion, right-aligned format, plugin status info functions, inactive-pane status styling.
+[~] Implement InfoBar prompt/message behavior close to Go micro.
+    Done: command/open/save/find/goto prompts, yes/no prompt (with onCancel callback), prompt history, incremental find prompt updates, completion candidate display, standalone info row for copy/cut/paste and other messages; buf.message cleared on every input event.
+    Done: Prompt now supports onCompletionSelect callback (fired on Tab/up/down selection change); used for live theme preview in command mode — Esc restores original colorscheme.
+    Done: Esc/Ctrl-C in non-YN prompts now correctly invokes onCancel.
+    Remaining: full InfoPane model, all prompt modes and completion behavior parity.
+
+Lua plugin parity
+-----------------
+[~] Complete wasmoon bridge for import("micro"), import("micro/config"), import("micro/buffer"), import("micro/shell"), import("micro/util").
+    Done: wasmoon engine loads; import() dispatch exists for micro/config/buffer/shell/util plus a few stdlib-like shims; config runtime-file helpers and basic shell/buffer/util calls exist.
+    Remaining: many micro APIs are stubs or missing, shell jobs are not implemented, command/keybinding/config semantics are incomplete.
+[~] Expose real BufPane, Cursor, Buffer, Tab, TabList objects with methods expected by plugins.
+    Done: minimal Buf/BufPane/Cursor adapters support autoclose-style Line/Insert/Replace/cursor movement and option access.
+    Remaining: real BufPane/Cursor/Buffer object parity, selections, multi-cursor, Tab/TabList APIs, InfoPane/Log/Raw buffers.
+[~] Implement all plugin lifecycle hooks: preinit, init, postinit, onRune, preInsertNewline, preBackspace, onSave, onBufferOpen, onBufferOptionChanged, onAnyEvent, etc.
+    Done: preinit/init/postinit, onRune, preInsertNewline, preBackspace, onSave, onBufferOpen, onSetActive/onBufferClose are dispatched in current editor paths.
+    Remaining: onBufferOptionChanged, onAnyEvent, deinit/reload hooks, full action hook coverage, exact args/return behavior.
+[~] Ensure Lua return values can cancel operations where Go micro expects bool false.
+    Done: PluginManager.runBool treats false as cancellation and is wired for preBackspace/preInsertNewline.
+    Remaining: all cancellable actions/hooks need to use the same path and match Go micro semantics.
+[~] Implement Lua module/package behavior closely enough for existing micro plugins.
+    Done: module(name, package.seeall) compatibility shim and per-plugin environment loading.
+    Remaining: package/searcher behavior, require/import edge cases, plugin reload/unload compatibility.
+[ ] Implement timers for micro.After with safe event-loop callback dispatch.
+[~] Add plugin error reporting matching Go micro behavior.
+    Done: load/call errors are captured on plugin.error/loadError and plugin load failures disable/report during startup.
+    Remaining: InfoBar/log buffer reporting, per-plugin stack formatting, reload-time reporting parity.
+[ ] Add tests loading built-in plugins and representative third-party plugins.
+
+JS plugin API (js-bridge.js)
+-----------------------------
+[x] Flat buffer helpers: getLine, putLine, delLine, getLines, getLinesCount.
+[x] getAllText() — entire buffer content as a single "\n"-joined string.
+[x] putAllText(text) — replace entire buffer; normalises line endings, pushes undo.
+[x] getSelection() / putSelection(text).
+[x] micro.shell.<CMD>(...args) — Proxy that calls runInteractiveShell([cmd, ...args]);
+    args passed as array directly to Bun.spawn (no shellSplit, no quoting needed); async.
+    runInteractiveShell() accepts string (shellSplit path) or array (direct spawn).
+[x] micro.action.<NAME>() Proxy for registered editor actions.
+[x] micro.cmd.<name>() Proxy for handleCommand.
+[x] micro.MakeCommand, micro.RegisterAction, micro.TermMessage, micro.alert, micro.Log,
+    micro.GetOption, micro.SetOption, micro.CurPane(), micro.on() hook registration.
+[ ] micro.After(ms, fn) — timer callback dispatched safely into editor event loop.
+[ ] Richer pane/buffer adapter methods on CurPane() result.
+
+Built-in plugins
+----------------
+[x] autoclose: wire onRune/preInsertNewline/preBackspace into real editing actions.
+    Fixed double-indent bug: autoclose preInsertNewline provides raw indent via buf:Insert, so
+    buffer.insert() now calls newline(false) to skip autoindent duplication.
+[x] comment: implement command, selection handling, comment.type behavior, keybindings.
+[x] diff: implement git HEAD base lookup, diff calculation, gutter rendering.
+[~] ftoptions: already partially works on onBufferOpen; verify all filetype cases and option semantics.
+[x] linter: full pipeline implemented.
+    - JobSpawn(cmd, luaArgs, onStdout, onStderr, onExit, ...userArgs) — Bun.spawn pipe, per-chunk
+      stdout/stderr streaming, onExit(output, userArgsTable) on exit (Go parity).
+    - JobStart(cmdStr, ...) — shell-splits string, same callback semantics.
+    - luaSeqToArray: normalises 0-indexed wasmoon array → plain JS array for argv building.
+    - Gutter message column (2 cols, Go parity): editorGutterWidth adds msgW=2 when buf.Messages
+      non-empty; renderGutter draws '> ' with gutter-error/warning/info colorscheme styles.
+    - diff and line-number columns shift right by msgW; existing click behavior unchanged.
+    - Clicking message column shows message text in infobar (buf.message).
+    - onBufferOptionChanged hook: SetOption/DoSetOptionNative capture oldValue and fire
+      _onOptionChange callback; attachSyntax wires _onOptionChange → plugins.run for every
+      buffer, covering filetype-change message cleanup and all other option-change plugins.
+[ ] literate: support AddRuntimeFileFromMemory, Reload, UpdateRules, syntax re-detection.
+[ ] status: implement SetStatusInfoFn and all status functions in statusline renderer.
+
+Syntax highlighting / colors
+----------------------------
+[~] Finish highlighter parity for nested regions, limit-group semantics, skip behavior, and state caching.
+    Done: per-buffer line result/state cache, render-time cache reuse, and optional progress callback inside highlighter regex scans.
+    Remaining: exact Go state propagation semantics, all nested/limit-group/skip corner cases, and complete syntax correctness parity.
+[~] Add incremental rehighlight states/matches instead of recomputing from top for each rendered line.
+    Done: visible rendering no longer recomputes from top for every line; cache invalidates from edited line and lazily rebuilds.
+    Done: long dirty lines (>300 chars) retain old state/match until Esc, matching the intended minified-file responsiveness tradeoff.
+    Remaining: Go-style edit-time ReHighlightStates that scans down until state stabilizes, plus configurable long-line policy.
+[ ] Reduce remaining regex compile failures from Go regexp syntax to JS regexp syntax.
+[ ] Verify all runtime/syntax YAML files load and highlight representative examples.
+[x] Handle multiline strings/comments exactly like Go highlighter.
+    Fixed root cause: scanTop re-entered the closing delimiter as a new region start after scanRegion
+    returned null. Fix: return null immediately after scanRegion closes (inner scanTop already handled rest of line).
+[x] Connect colorscheme styles to CellBuffer cell styles rather than raw ANSI strings.
+[~] Implement colorcolumn, cursor-line, match-brace, trailing whitespace, tab error, hlsearch, and gutter styles.
+    Done: search highlighting/incremental search; matchbrace for (), {}, [] with underline/highlight style and status-col click jumps between matched braces; cursor-line bg highlight (active pane, all visual rows in softwrap, pads full line width from colorscheme cursor-line style).
+    Done: trailing whitespace — trailingws setting (default false) controls highlighting; renderHighlightedCells applies "trailingws" colorscheme style (fallback: red+underline) to trailing spaces/tabs, overridden by search/brace/selection.
+    Remaining: colorcolumn, current-line-number gutter style, tab error, full gutter styles, hlsearch option parity.
+
+Clipboard / platform integration
+--------------------------------
+[~] Verify Linux clipboard backends: wl-copy/wl-paste, xclip, xsel.
+    Done: backend detection and command wrappers exist; external read/write failures now fall back to internal register instead of breaking copy/paste.
+    Remaining: real platform verification for wl-copy/wl-paste, xclip, xsel.
+[ ] Verify Android behavior only when process.platform reports android; Linux must not use Termux clipboard commands.
+[ ] Verify macOS pbcopy/pbpaste and Windows PowerShell Set-Clipboard/Get-Clipboard.
+[ ] Implement terminal OSC 52 clipboard method.
+[ ] Implement primary selection behavior for Linux where applicable.
+[~] Implement internal multi-register clipboard and multi-cursor clipboard parity.
+    Done: internal register map exists and is used as fallback; Ctrl-C/Ctrl-X/Ctrl-V/Ctrl-Y handle current selection and line copy/cut/paste.
+    Remaining: Go micro multi-register semantics, primary selection parity, multi-cursor clipboard behavior.
+
+Shell / jobs / terminal pane
+----------------------------
+[~] Complete shellquote.Split parity or improve POSIX shell lexer.
+    Done: shellSplit handles empty quoted tokens ("" / ''), backslash escapes, single/double quotes correctly.
+    Remaining: here-doc, process substitution, and other advanced shell constructs not needed for command bar.
+[ ] Implement JobStart/JobSpawn/JobStop/JobSend with callbacks and user args.
+[ ] Implement background job queue equivalent to shell.Jobs.
+[ ] Implement interactive shell temp screen fini/start behavior.
+[x] Implement Ctrl-B ShellMode prompt and shell command execution with temporary screen fini/start behavior.
+[x] Improve Bun PTY terminal pane rendering using terminal state/cell emulation instead of raw line log.
+    VT100 class in src/screen/vt100.js: CSI cursor/erase/SGR/scroll, CPR response, OSC strip.
+[ ] Implement terminal selection/copy and close behavior parity.
+[ ] Verify Bun.spawn stdio usage everywhere; PTY terminal option remains separate.
+[x] Shared HTTP backend in platform/commands.js: fetchHttp(url) and downloadFile(url, outPath).
+    Priority: Bun.which detects curl (curl -kL --silent --fail) or wget (wget --no-check-certificate -q -O -),
+    falls back to native fetch(). _httpBackend module-level cache so detection runs once.
+    Used by both loadBufferForPath (open URL) and plugin manager download paths.
+[x] TTS platform parameters fully wired:
+    - Android termux-tts-speak: -p <pitch> -r <speed> (unchanged).
+    - macOS say: -r <wpm> (175×speed); pitch via [[pbas n]] text prefix (48×pitch, 0-127); applied via textTransform after sanitization.
+    - Windows SAPI: .Rate = n (±10, from speed); pitch via SSML <prosody pitch="+n%"> using SecurityElement.Escape for XML safety.
+    - Linux espeak/espeak-ng: --speed=<wpm> --pitch=<n> (0-99, 50=normal).
+    - ttsspeed / ttspitch commands set Bun.env.TTS_SPEED / TTS_PITCH; no-arg shows current value.
+
+Runtime / config / plugin installer
+-----------------------------------
+[x] Keep all runtime assets self-contained under bunmicro/runtime.
+[ ] Implement clean config behavior.
+[x] Implement plugin install/remove/update/search/available/list fully.
+    pluginCommand dispatches: list, available (alias: avail), search, install, remove, update.
+    _fetchAllPackages fetches channel.json (JSON5) → repo URLs → PluginPackage arrays; cached in _packages.
+    _downloadAndInstall: downloadFile + extractAndStrip + write _installed_version.txt.
+    _installedVersion: reads _installed_version.txt or scans JSON metadata files in plugin dir.
+[x] Implement plugin channel fetch, semver/version checks, zip extraction policy.
+    channel.json parsed with Bun.JSON5.parse (supports // comments). _compareSemver for version ordering.
+    extractAndStrip: extracts zip to temp dir, strips single top-level prefix directory, renames to destDir.
+[x] Use macOS/Windows built-in tar for zip extraction; Linux/Android require unzip if not present.
+    extractZip: darwin/win32 use tar -xf; linux/android check hasCommand("unzip") and throw if missing.
+[~] Implement runtime file override order exactly: user files override built-in assets.
+    Done: RuntimeRegistry loads user colorschemes/syntax/help before bundled runtime and skips duplicate bundled names.
+    Remaining: verify plugin/runtime kind parity and exact Go lookup ordering for every runtime kind.
+[~] Implement settings write-back, modified/volatile settings, global/local/ft/glob settings.
+    Done: set writes global options to settings.json through Config.saveSettings; setlocal applies buffer-local values without global write-back.
+    Done: LOCAL_SETTINGS = {readonly, filetype} — set treats these as setlocal; saveSettings() never writes them; also strips any leaked keys from parsedSettings on next save.
+    Remaining: ft:/glob: settings application/write-back, exact Go modified/volatile semantics, and plugin option edge cases.
+[~] Validate encodings and colorscheme names like Go micro.
+    Done: encoding values are validated with TextDecoder support.
+    Remaining: colorscheme validation and exact Go htmlindex encoding-name parity.
+
+Display / UI behavior
+---------------------
+[~] Implement softwrap, wordwrap, horizontal scrolling, scrollmargin, scrollbar.
+    Done: softwrap and wordwrap rendering (both non-softwrap and softwrap paths); softwrap/wordwrap settings now initialized from config on startup and persisted via set command.
+    Done additionally: scrollmargin applied in non-softwrap updateScrollForPane (keeps N lines of margin at top/bottom); softwrap scrollmargin deferred (needs backward row counting).
+    Fixed softwrap scroll-down cursor bug: cursor above scroll position now produces negative visualRowOffset
+    (using negated slocDiff) so cursorVisible=false, matching non-softwrap scroll-without-cursor behavior.
+    Remaining: horizontal scrolling, scrollbar.
+[~] Implement line numbers/current-line-number/relative ruler behavior.
+    Done: ruler setting controls gutter visibility, Ctrl-R toggles line numbers with Go-style messages, relative ruler text is supported when setting is enabled.
+    Remaining: current-line-number styling and exact ruler option parity.
+[~] Implement tabs display, split dividers, help split behavior, tab highlighting/reverse options.
+    Done: tabbar rendering with active tab style, split divider rendering, Ctrl-G help split toggle.
+    Done: help command fully ported — topics, -vsplit/-hsplit flags, helpsplit setting (default hsplit),
+          Ctrl-G uses hsplit, replace-in-pane when already a help buffer, "Sorry, no help for X" error.
+    Remaining: all tabbar/highlight/reverse options and exact help split policy parity.
+[x] Implement basic tabbar display and active-tab highlighting for the current one-buffer-per-tab model.
+[ ] Implement InfoPane/help/log/raw/info buffers.
+[ ] Implement gutter messages with styles and line alignment.
+[x] Implement search highlighting and incremental search.
+[~] Implement matchbrace behavior and styles.
+    Done: brace matching/highlighting for (), {}, [] and statusline column click jump/cycle are implemented.
+    Remaining: exact Go style option parity and broader integration with gutter/cursor-line styling.
+
+Testing / quality
+-----------------
+[ ] Add automated tests for platform command stdio, clipboard backend selection, archive policy.
+[ ] Add tests for config JSON5, glob/ft settings, runtime registry override order.
+[ ] Add tests for syntax detection/highlighting and colorscheme include/default style behavior.
+[ ] Add tests for mouse SGR/X10 parsing, bracketed paste, key parsing, Shift+arrow selection, clipboard fallback, and partial sequence buffering.
+[ ] Add tests for buffer editing, undo/redo, save/load, Unicode width, selection delete/copy/paste, and matchbrace.
+[ ] Add smoke tests that run without depending on parent Go repo.
