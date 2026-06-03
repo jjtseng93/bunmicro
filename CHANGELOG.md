@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.5] - 2026-06-03
+- Added encoding hex3 for binary edit
+- term better supports fish
+- enter to close term
+- bat-like highlighting supports URL
+
 ## [0.9.1] - 2026-06-03
 - Upgrade method explanation
 
