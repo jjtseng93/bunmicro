@@ -77,6 +77,8 @@ npm install -g bun
 
 # Run bunmicro(stable)
 npx bunmicro
+# npx bunmicro@latest to upgrade to new version
+
 # npx bunmicro [options] [file1] [file2] ...
 # alternative: bun bunmicro/src/index.js [options] [file1] [file2] ...
 # if npx is not available, use npm x -- bunmicro
@@ -93,6 +95,8 @@ npx bunmicro
 
 ```sh
 bun x bunmicro
+# bun x bunmicro@latest to upgrade to new version
+
 # bun x bunmicro [options] [file1] [file2] ... 
 # alternative: bun bunmicro/src/index.js [options] [file1] [file2] ...
 

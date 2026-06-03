@@ -1,5 +1,8 @@
 # Changelog
 
+## [0.9.1] - 2026-06-03
+- Upgrade method explanation
+
 ## [0.9.0] - 2026-06-03
 - Added more alt- key bindings
 - Alt-s for Selection mode
