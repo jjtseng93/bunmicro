@@ -59,7 +59,19 @@ export class Screen {
     let out = "\x1b[?25l";
     let activeStyleKey = null;
     for (const { x, y, cell } of changes) {
-      if (cell.filler) continue; // right-half of a wide char; the char itself already covers this column
+      if (cell.filler) continue; // right-half of a wide char; the base cell covers this column
+      // If this is a wide char (next cell is its filler), clear the filler column with
+      // default style first. On narrow-emoji terminals this leaves a default-bg blank
+      // at the right-half column instead of stale cursor-line / syntax background, so
+      // the area next to the glyph doesn't look like a colored block "covering" it.
+      // On wide-emoji terminals the glyph's right half overwrites the blank harmlessly.
+      const nextCell = this.cells.getContent(x + 1, y);
+      if (nextCell?.filler) {
+        out += this.move(y + 1, x + 2);
+        out += styleToAnsi({});
+        activeStyleKey = "";
+        out += " ";
+      }
       out += this.move(y + 1, x + 1);
       if (cell.styleKey !== activeStyleKey) {
         out += styleToAnsi(cell.style ?? {});

@@ -8,7 +8,7 @@ const ANSI_COLORS = [
 ];
 
 function blankCell() {
-  return { ch: " ", fg: "default", bg: "default", bold: false, italic: false, underline: false, reverse: false };
+  return { ch: " ", combining: [], filler: false, fg: "default", bg: "default", bold: false, italic: false, underline: false, reverse: false };
 }
 
 function findCSIEnd(str, start) {
@@ -22,6 +22,52 @@ function findCSIEnd(str, start) {
 
 function toHex2(n) {
   return ((n ?? 0) & 0xFF).toString(16).padStart(2, "0");
+}
+
+function isZeroWidthCodePoint(cp) {
+  return (
+    cp === 0x200D ||
+    (cp >= 0x0300 && cp <= 0x036F) ||
+    (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+    (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+    (cp >= 0x20D0 && cp <= 0x20FF) ||
+    (cp >= 0xFE00 && cp <= 0xFE0F) ||
+    (cp >= 0xFE20 && cp <= 0xFE2F) ||
+    (cp >= 0xE0100 && cp <= 0xE01EF)
+  );
+}
+
+function isWideCodePoint(cp) {
+  if (cp < 0x1100) return false;
+  return (
+    cp <= 0x115F ||
+    cp === 0x2329 || cp === 0x232A ||
+    (cp >= 0x2E80 && cp <= 0x303E) ||
+    (cp >= 0x3040 && cp <= 0x33FF) ||
+    (cp >= 0x3400 && cp <= 0x4DBF) ||
+    (cp >= 0x4E00 && cp <= 0xA4C6) ||
+    (cp >= 0xA960 && cp <= 0xA97C) ||
+    (cp >= 0xAC00 && cp <= 0xD7A3) ||
+    (cp >= 0xF900 && cp <= 0xFAFF) ||
+    (cp >= 0xFE10 && cp <= 0xFE19) ||
+    (cp >= 0xFE30 && cp <= 0xFE4F) ||
+    (cp >= 0xFF01 && cp <= 0xFF60) ||
+    (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+    (cp >= 0x1B000 && cp <= 0x1B0FF) ||
+    (cp >= 0x1F004 && cp <= 0x1F0CF) ||
+    (cp >= 0x1F18F && cp <= 0x1F19A) ||
+    (cp >= 0x1F200 && cp <= 0x1F2FF) ||
+    (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+    (cp >= 0x20000 && cp <= 0x2FFFD) ||
+    (cp >= 0x30000 && cp <= 0x3FFFD)
+  );
+}
+
+function charWidth(ch) {
+  if (!ch) return 0;
+  const cp = ch.codePointAt(0);
+  if (cp < 32 || (cp >= 0x7f && cp < 0xa0) || isZeroWidthCodePoint(cp)) return 0;
+  return isWideCodePoint(cp) ? 2 : 1;
 }
 
 export class VT100 {
@@ -56,10 +102,7 @@ export class VT100 {
     return this.cells[this._idx(x, y)];
   }
 
-  _setCell(x, y, ch) {
-    const cell = this._cell(x, y);
-    if (!cell) return;
-    cell.ch = ch;
+  _copyStyleTo(cell) {
     cell.fg = this.sgr.fg;
     cell.bg = this.sgr.bg;
     cell.bold = this.sgr.bold;
@@ -68,9 +111,52 @@ export class VT100 {
     cell.reverse = this.sgr.reverse;
   }
 
-  _clearCell(x, y) {
+  _clearCellRaw(x, y) {
     const cell = this._cell(x, y);
     if (cell) Object.assign(cell, blankCell());
+  }
+
+  _breakWideAt(x, y) {
+    const cell = this._cell(x, y);
+    if (!cell) return;
+    if (cell.filler) this._clearCellRaw(x - 1, y);
+    if (x + 1 < this.cols && this._cell(x + 1, y)?.filler) this._clearCellRaw(x + 1, y);
+  }
+
+  _setCell(x, y, ch, width = 1) {
+    if (width === 0) {
+      const targetX = this.cx > 0 ? this.cx - 1 : 0;
+      const cell = this._cell(targetX, this.cy);
+      if (cell && !cell.filler) cell.combining.push(ch);
+      return;
+    }
+    if (width > 1 && x >= this.cols - 1) {
+      this.cx = 0;
+      this._lineFeed();
+      x = this.cx;
+      y = this.cy;
+    }
+    this._breakWideAt(x, y);
+    if (width > 1) this._breakWideAt(x + 1, y);
+    const cell = this._cell(x, y);
+    if (!cell) return;
+    cell.ch = ch;
+    cell.combining = [];
+    cell.filler = false;
+    this._copyStyleTo(cell);
+    if (width > 1) {
+      const filler = this._cell(x + 1, y);
+      if (filler) {
+        Object.assign(filler, blankCell());
+        filler.filler = true;
+        this._copyStyleTo(filler);
+      }
+    }
+  }
+
+  _clearCell(x, y) {
+    this._breakWideAt(x, y);
+    this._clearCellRaw(x, y);
   }
 
   _clearLineFrom(x, y) {
@@ -198,12 +284,15 @@ export class VT100 {
         i++; // SO/SI charset switch, ignore
       } else if (code >= 0x20) {
         // Printable
-        this._setCell(this.cx, this.cy, ch);
-        this.cx++;
+        const cp = data.codePointAt(i);
+        const rune = String.fromCodePoint(cp);
+        const width = charWidth(rune);
+        this._setCell(this.cx, this.cy, rune, width);
+        this.cx += width;
         if (this.cx >= this.cols) {
           this.cx = 0; this._lineFeed();
         }
-        i++;
+        i += cp > 0xFFFF ? 2 : 1;
       } else {
         i++; // other control: skip
       }
