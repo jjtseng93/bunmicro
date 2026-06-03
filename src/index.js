@@ -21,6 +21,7 @@ import { ClipboardManager } from "./platform/clipboard.js";
 import { platformId, run as runCommand, runSync, fetchHttp, fetchHttpBytes, detectHttpBackend } from "./platform/commands.js";
 import { shellSplit } from "./shell/shell.js";
 import { styleToAnsi } from "./display/ansi-style.js";
+import { encodeBinaryToBuffer, decodeBinaryBytes } from "./buffer/fixed3-codec.js";
 
 import pkg from "../package.json" with { type: "json" };
 
@@ -134,18 +135,27 @@ function isHttpUrl(value) {
 }
 
 async function readTextFileWithEncoding(path, encoding = "utf-8") {
-  const decoder = new TextDecoder(normalizeEncodingLabel(encoding));
   const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+  if (normalizeEncodingLabel(encoding) === "hex3") {
+    return { text: encodeBinaryToBuffer(bytes).toString("latin1"), encoding: "hex3" };
+  }
+  const decoder = new TextDecoder(normalizeEncodingLabel(encoding));
   return { text: decoder.decode(bytes), encoding: decoder.encoding };
 }
 
 async function fetchTextWithEncoding(url, encoding = "utf-8") {
+  const bytes = await fetchHttpBytes(url);
+  if (normalizeEncodingLabel(encoding) === "hex3") {
+    return { text: encodeBinaryToBuffer(new Uint8Array(bytes)).toString("latin1"), encoding: "hex3" };
+  }
   const decoder = new TextDecoder(normalizeEncodingLabel(encoding));
-  return { text: decoder.decode(await fetchHttpBytes(url)), encoding: decoder.encoding };
+  return { text: decoder.decode(bytes), encoding: decoder.encoding };
 }
 
 function normalizeEncodingLabel(encoding = "utf-8") {
-  return new TextDecoder(String(encoding || "utf-8")).encoding;
+  const s = String(encoding || "utf-8");
+  if (s === "hex3") return "hex3";
+  return new TextDecoder(s).encoding;
 }
 
 function isReadonlyBuffer(buf) {
@@ -1043,6 +1053,21 @@ class BufferModel {
   async save(path = this.path) {
     if (!path) throw new Error("No filename");
     let text = this.lines.join("\n");
+    if (this.encoding === "hex3") {
+      await Bun.write(path, decodeBinaryBytes(Buffer.from(text, "latin1")));
+      this.path = path;
+      this.Path = path;
+      this.AbsPath = path;
+      this.name = basename(path);
+      this.updateModTime();
+      this.readonly = !canWritePath(path);
+      this.Settings.readonly = this.readonly;
+      this.Type.Readonly = this.readonly;
+      this._savedSerial = this._undoSerial ?? 0;
+      this.modified = false;
+      this.message = `Saved ${path}`;
+      return;
+    }
     if (DEFAULT_SETTINGS.eofnewline && !text.endsWith("\n")) text += "\n";
     await Bun.write(path, text);
     this.encoding = "utf-8";
@@ -1324,6 +1349,7 @@ class TerminalPane {
     this.proc = null;
     this.vt = null;
     this.decoder = new TextDecoder();
+    this.exited = false;
   }
 
   open(cols, rows) {
@@ -1335,6 +1361,7 @@ class TerminalPane {
     cols = Math.max(10, cols ?? this.app.cols);
     rows = Math.max(4, rows ?? Math.floor(this.app.rows / 2));
     this.vt = new VT100(cols, rows);
+    this.exited = false;
     this.proc = Bun.spawn([shell], {
       env: { ...process.env, TERM: "xterm-256color", COLUMNS: String(cols), LINES: String(rows) },
       terminal: {
@@ -1348,7 +1375,8 @@ class TerminalPane {
           this.app.render();
         },
         exit: () => {
-          this.vt.feed("\r\n[process exited]\r\n");
+          this.exited = true;
+          this.vt.feed("\r\n[process exited]\r\nPress enter to close\r\n");
           this.app.render();
         },
       },
@@ -1356,7 +1384,12 @@ class TerminalPane {
   }
 
   write(data) {
+    if (this.exited) return;
     this.proc?.terminal?.write(data);
+  }
+
+  writeInput(data) {
+    this.write(encodeTerminalInput(data, this.vt));
   }
 
   resize(cols, rows) {
@@ -1367,13 +1400,102 @@ class TerminalPane {
 
   close() {
     try {
-      this.proc?.kill();
+      if (!this.exited) this.proc?.kill();
       this.proc?.terminal?.close();
     } catch {
       // PTY may already be closed.
     }
     this.proc = null;
+    this.exited = true;
   }
+}
+
+function encodeTerminalInput(data, vt) {
+  if (!vt) return data;
+  const flags = vt.keyboardProtocolFlags ?? 0;
+  const wantsKitty = flags !== 0;
+  const wantsXterm = (vt.modifyOtherKeys ?? 0) > 0 || (vt.formatOtherKeys ?? 0) > 0;
+  if (!wantsKitty && !wantsXterm) return data;
+
+  const text = data instanceof Uint8Array ? decoder.decode(data) : String(data);
+  const events = parseInputEvents(text);
+  if (events.length === 0 || events.some(e => e.type !== "key")) return data;
+
+  const encoded = [];
+  for (const event of events) {
+    const seq = encodeKeyEventForTerminal(event, flags, wantsXterm);
+    if (!seq) return data;
+    encoded.push(seq);
+  }
+  return encoded.join("");
+}
+
+function encodeKeyEventForTerminal(event, flags, wantsXterm) {
+  const key = event.key;
+  const raw = event.raw ?? "";
+  const reportAll = (flags & 8) !== 0;
+  const disambiguate = (flags & 1) !== 0 || reportAll || wantsXterm;
+
+  if (!reportAll && isPlainTextKey(raw, key)) return raw;
+  const parsed = keyToKittyCode(key, raw);
+  if (!parsed) return raw;
+  const { code, modifiers } = parsed;
+  if (!reportAll && !disambiguate && modifiers <= 1) return raw;
+  if (!reportAll && modifiers <= 1 && !needsDisambiguation(key)) return raw;
+  return `\x1b[${code};${modifiers}u`;
+}
+
+function isPlainTextKey(raw, key) {
+  return raw && raw === key && !raw.includes("\x1b") && !/^(?:ctrl|alt|shift)-/.test(key) && !KEY_CODEPOINTS[key];
+}
+
+function needsDisambiguation(key) {
+  return key === "escape" || key.startsWith("ctrl-") || key.startsWith("alt-") || key.includes("shift-");
+}
+
+const NAMED_KEY_CODEPOINTS = {
+  escape: 27,
+  enter: 13,
+  tab: 9,
+  backspace: 127,
+  delete: 57362,
+  insert: 57363,
+  left: 57364,
+  right: 57365,
+  up: 57366,
+  down: 57367,
+  pageup: 57368,
+  pagedown: 57369,
+  home: 57370,
+  end: 57371,
+};
+
+const KEY_CODEPOINTS = NAMED_KEY_CODEPOINTS;
+
+function keyToKittyCode(key, raw) {
+  let rest = key;
+  let mods = 1;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [prefix, bit] of [["shift-", 1], ["alt-", 2], ["ctrl-", 4]]) {
+      if (rest.startsWith(prefix)) {
+        mods += bit;
+        rest = rest.slice(prefix.length);
+        changed = true;
+      }
+    }
+  }
+
+  if (rest === "space") return { code: 32, modifiers: mods };
+  if (KEY_CODEPOINTS[rest]) return { code: KEY_CODEPOINTS[rest], modifiers: mods };
+  if (rest.length === 1) return { code: rest.toLowerCase().codePointAt(0), modifiers: mods };
+
+  if (raw.length === 1 && raw >= " " && raw !== "\x7f") return { code: raw.toLowerCase().codePointAt(0), modifiers: mods };
+  if (raw.length === 1 && raw.charCodeAt(0) >= 1 && raw.charCodeAt(0) <= 26) {
+    return { code: raw.charCodeAt(0) + 96, modifiers: mods | 4 };
+  }
+  return null;
 }
 
 // ─── Pane / split layout ────────────────────────────────────────────────────
@@ -2325,17 +2447,15 @@ class App {
         return;
       }
 
-      // Escape alone: restore previous buffer if available, otherwise close pane
-      if (text === "\x1b") {
-        activePaneObj.terminal?.close();
-        activePaneObj.terminal = null;
-        if (activePaneObj.prevBuffer) {
-          activePaneObj.type = "editor";
-          activePaneObj.buffer = activePaneObj.prevBuffer;
-          activePaneObj.prevBuffer = null;
-        } else {
-          this.closePane(activePaneObj);
-        }
+      if (activePaneObj.terminal.exited && events.some((event) => event.type === "key" && event.key === "enter")) {
+        this.closeTermPane(activePaneObj);
+        this.render();
+        return;
+      }
+
+      // Escape alone: close pane in legacy mode; protocol-aware shells need it as input.
+      if (text === "\x1b" && !(activePaneObj.terminal?.vt?.keyboardProtocolFlags || activePaneObj.terminal?.vt?.modifyOtherKeys)) {
+        this.closeTermPane(activePaneObj);
         this.render();
         return;
       }
@@ -2352,7 +2472,7 @@ class App {
 
       // Any other key input: reset scroll to live view, then forward
       if (activePaneObj.terminal?.vt) activePaneObj.terminal.vt.scrollOffset = 0;
-      activePaneObj.terminal.write(data);
+      activePaneObj.terminal.writeInput(data);
       return;
     }
 
@@ -3384,7 +3504,8 @@ class App {
   async save({ force = false } = {}) {
     if (!force && this.buffer?.readonly) { this.message = "Can't save under readonly mode"; return; }
     try {
-      if (normalizeEncodingLabel(this.buffer?.encoding) !== "utf-8") {
+      const enc = normalizeEncodingLabel(this.buffer?.encoding);
+      if (enc !== "utf-8" && enc !== "hex3") {
         this.openYNPrompt("Save in UTF-8?(y,n)", async (answer) => {
           if (answer === "y") await this.saveUtf8();
         });
@@ -3534,6 +3655,18 @@ class App {
       if (markers[y] !== 0) { buf.cursor.y = y; buf.ensureCursor(); this.message = ""; return; }
     }
     this.message = "No previous diff";
+  }
+
+  closeTermPane(pane) {
+    pane.terminal?.close();
+    pane.terminal = null;
+    if (pane.prevBuffer) {
+      pane.type = "editor";
+      pane.buffer = pane.prevBuffer;
+      pane.prevBuffer = null;
+    } else {
+      this.closePane(pane);
+    }
   }
 
   closePane(pane) {
@@ -3774,7 +3907,7 @@ class App {
         const saveArgs = [...cmdArgs];
         const saveForce = saveArgs[0] === "-f" && (saveArgs.shift(), true);
         if (!saveForce && buf?.readonly) { this.message = "Can't save under readonly mode"; break; }
-        if (saveArgs.length > 0 && normalizeEncodingLabel(buf?.encoding) !== "utf-8") {
+        if (saveArgs.length > 0 && normalizeEncodingLabel(buf?.encoding) !== "utf-8" && normalizeEncodingLabel(buf?.encoding) !== "hex3") {
           const target = resolve(expandHome(saveArgs[0]));
           this.openYNPrompt("Save in UTF-8?(y,n)", async (answer) => {
             if (answer === "y") {
@@ -4546,12 +4679,14 @@ const COMMAND_NAMES = [
 ];
 
 const SUPPORTED_ENCODING_LABELS = [
+  "hex3",
   "utf-8", "utf-16le", "utf-16be",
   "windows-1252", "iso-8859-1", "latin1",
   "big5", "gbk", "gb18030",
   "shift_jis", "sjis", "euc-jp", "iso-2022-jp",
   "euc-kr", "ks_c_5601-1987",
 ].filter((encoding) => {
+  if (encoding === "hex3") return true;
   try { new TextDecoder(encoding); return true; }
   catch { return false; }
 });
@@ -5562,7 +5697,10 @@ async function loadBuffers(files, command) {
   } else if (!process.stdin.isTTY) {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    buffers.push(new BufferModel({ text: Buffer.concat(chunks).toString("utf8"), type: process.stdout.isTTY ? "default" : "stdout", command }));
+    const stdinText = Buffer.concat(chunks).toString("utf8");
+    const stdinBuf = new BufferModel({ text: stdinText, type: process.stdout.isTTY ? "default" : "stdout", command });
+    if (loadBuffers.context) attachSyntax(stdinBuf, loadBuffers.context, "", stdinText);
+    buffers.push(stdinBuf);
   } else {
     buffers.push(new BufferModel({ command }));
   }
@@ -6032,8 +6170,18 @@ function syncEditorSettings(config) {
 async function catFiles(files, colorscheme, syntaxDefinitions) {
   const targets = files.length > 0 ? files.map((f) => ({ path: f, stdin: false })) : [{ path: null, stdin: true }];
   for (const { path: filePath, stdin } of targets) {
-    const content = stdin ? await Bun.stdin.text() : await Bun.file(filePath).text();
-    if (filePath && /\.md$/i.test(filePath)) {
+    let content;
+    let effectivePath = filePath;
+    if (stdin) {
+      content = await Bun.stdin.text();
+    } else if (isHttpUrl(filePath)) {
+      content = await fetchHttp(filePath);
+      // Use the URL pathname for syntax/md detection (strip query/hash)
+      try { effectivePath = new URL(filePath).pathname; } catch { effectivePath = filePath; }
+    } else {
+      content = await Bun.file(filePath).text();
+    }
+    if (effectivePath && /\.md$/i.test(effectivePath)) {
       process.stdout.write(
         Bun.markdown.ansi(content,{
           hyperlinks:true
@@ -6043,7 +6191,7 @@ async function catFiles(files, colorscheme, syntaxDefinitions) {
     }
     const lines = content.split("\n");
     const def = detectSyntax(syntaxDefinitions, {
-      path: filePath ?? "",
+      path: effectivePath ?? "",
       firstLine: lines[0] ?? "",
       lines: lines.slice(0, 50),
     });

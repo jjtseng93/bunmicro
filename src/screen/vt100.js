@@ -77,6 +77,7 @@ export class VT100 {
     this.cells = [];
     this.cx = 0;
     this.cy = 0;
+    this.wrapPending = false;
     this.savedCursor = { x: 0, y: 0 };
     this.scrollTop = 0;
     this.scrollBottom = this.rows - 1;
@@ -88,6 +89,10 @@ export class VT100 {
     this.scrollOffset = 0;      // 0 = live view; n = n rows scrolled back into history
     // mouse reporting: set by the application via ?1000h / ?1002h / ?1003h
     this.mouseMode = false;
+    this.keyboardProtocolFlags = 0;
+    this.keyboardProtocolStack = [];
+    this.modifyOtherKeys = 0;
+    this.formatOtherKeys = 0;
     this._initCells();
   }
 
@@ -205,11 +210,18 @@ export class VT100 {
   }
 
   _lineFeed() {
+    this.wrapPending = false;
     if (this.cy < this.scrollBottom) {
       this.cy++;
     } else {
       this._scrollUp(1);
     }
+  }
+
+  _moveCursor(x, y) {
+    this.cx = Math.min(this.cols - 1, Math.max(0, x));
+    this.cy = Math.min(this.rows - 1, Math.max(0, y));
+    this.wrapPending = false;
   }
 
   // Feed a chunk of terminal output. Returns array of response strings to send back.
@@ -248,17 +260,18 @@ export class VT100 {
         } else if (next === "7") {
           this.savedCursor = { x: this.cx, y: this.cy }; i += 2;
         } else if (next === "8") {
-          this.cx = this.savedCursor.x; this.cy = this.savedCursor.y; i += 2;
+          this._moveCursor(this.savedCursor.x, this.savedCursor.y); i += 2;
         } else if (next === "M") {
           // Reverse index
           if (this.cy === this.scrollTop) this._scrollDown(1);
-          else this.cy = Math.max(0, this.cy - 1);
+          else this._moveCursor(this.cx, this.cy - 1);
           i += 2;
         } else if (next === "(" || next === ")" || next === "*" || next === "+") {
           i += 3; // charset designation, skip designator
         } else if (next === "c") {
           // Full reset
           this._initCells(); this.cx = this.cy = 0;
+          this.wrapPending = false;
           this.sgr = { fg: "default", bg: "default", bold: false, italic: false, underline: false, reverse: false };
           this.scrollTop = 0; this.scrollBottom = this.rows - 1;
           i += 2;
@@ -271,13 +284,15 @@ export class VT100 {
         }
 
       } else if (ch === "\r") {
-        this.cx = 0; i++;
+        this.cx = 0; this.wrapPending = false; i++;
       } else if (ch === "\n" || ch === "\x0b" || ch === "\x0c") {
         this._lineFeed(); i++;
       } else if (ch === "\b") {
-        if (this.cx > 0) this.cx--; i++;
+        if (this.wrapPending) this.wrapPending = false;
+        else if (this.cx > 0) this.cx--;
+        i++;
       } else if (ch === "\t") {
-        this.cx = Math.min(this.cols - 1, (Math.floor(this.cx / 8) + 1) * 8); i++;
+        this.cx = Math.min(this.cols - 1, (Math.floor(this.cx / 8) + 1) * 8); this.wrapPending = false; i++;
       } else if (ch === "\x07") {
         i++; // Bell: ignore
       } else if (ch === "\x0e" || ch === "\x0f") {
@@ -287,10 +302,20 @@ export class VT100 {
         const cp = data.codePointAt(i);
         const rune = String.fromCodePoint(cp);
         const width = charWidth(rune);
+        if (width > 0 && this.wrapPending) {
+          this.cx = 0;
+          this._lineFeed();
+        }
         this._setCell(this.cx, this.cy, rune, width);
-        this.cx += width;
-        if (this.cx >= this.cols) {
-          this.cx = 0; this._lineFeed();
+        if (width > 0) {
+          const nextX = this.cx + width;
+          if (nextX >= this.cols) {
+            this.cx = this.cols - 1;
+            this.wrapPending = true;
+          } else {
+            this.cx = nextX;
+            this.wrapPending = false;
+          }
         }
         i += cp > 0xFFFF ? 2 : 1;
       } else {
@@ -302,6 +327,10 @@ export class VT100 {
   }
 
   _handleCSI(params, final) {
+    if (final === "u" && /^(?:[?<>]=?|=)/.test(params)) {
+      return this._handleKeyboardProtocol(params);
+    }
+
     // Check for private mode prefix
     const isPrivate = params.startsWith("?");
     const raw = isPrivate ? params.slice(1) : params;
@@ -310,17 +339,15 @@ export class VT100 {
     const p2 = parts[1] ?? 0;
 
     switch (final) {
-      case "A": this.cy = Math.max(this.scrollTop, this.cy - Math.max(1, p1)); break;
-      case "B": this.cy = Math.min(this.scrollBottom, this.cy + Math.max(1, p1)); break;
-      case "C": this.cx = Math.min(this.cols - 1, this.cx + Math.max(1, p1)); break;
-      case "D": this.cx = Math.max(0, this.cx - Math.max(1, p1)); break;
-      case "E": this.cy = Math.min(this.rows - 1, this.cy + Math.max(1, p1)); this.cx = 0; break;
-      case "F": this.cy = Math.max(0, this.cy - Math.max(1, p1)); this.cx = 0; break;
-      case "G": this.cx = Math.min(this.cols - 1, Math.max(0, Math.max(1, p1) - 1)); break;
+      case "A": this._moveCursor(this.cx, Math.max(this.scrollTop, this.cy - Math.max(1, p1))); break;
+      case "B": this._moveCursor(this.cx, Math.min(this.scrollBottom, this.cy + Math.max(1, p1))); break;
+      case "C": this._moveCursor(Math.min(this.cols - 1, this.cx + Math.max(1, p1)), this.cy); break;
+      case "D": this._moveCursor(Math.max(0, this.cx - Math.max(1, p1)), this.cy); break;
+      case "E": this._moveCursor(0, Math.min(this.rows - 1, this.cy + Math.max(1, p1))); break;
+      case "F": this._moveCursor(0, Math.max(0, this.cy - Math.max(1, p1))); break;
+      case "G": this._moveCursor(Math.min(this.cols - 1, Math.max(0, Math.max(1, p1) - 1)), this.cy); break;
       case "H":
-      case "f":
-        this.cy = Math.min(this.rows - 1, Math.max(0, Math.max(1, p1) - 1));
-        this.cx = Math.min(this.cols - 1, Math.max(0, Math.max(1, p2) - 1));
+        this._moveCursor(Math.max(0, Math.max(1, p2) - 1), Math.max(0, Math.max(1, p1) - 1));
         break;
       case "J":
         if (p1 === 0) {
@@ -365,8 +392,17 @@ export class VT100 {
         for (let x = this.cx; x < Math.min(this.cols, this.cx + n); x++) this._clearCell(x, this.cy);
         break;
       }
-      case "d": this.cy = Math.min(this.rows - 1, Math.max(0, Math.max(1, p1) - 1)); break;
-      case "m": this._handleSGR(parts); break;
+      case "d": this._moveCursor(this.cx, Math.min(this.rows - 1, Math.max(0, Math.max(1, p1) - 1))); break;
+      case "f":
+        if (params.startsWith(">")) this._handleXtermKeyFormat(raw);
+        else {
+          this._moveCursor(Math.max(0, Math.max(1, p2) - 1), Math.max(0, Math.max(1, p1) - 1));
+        }
+        break;
+      case "m":
+        if (params.startsWith(">")) this._handleXtermKeyModifier(raw);
+        else this._handleSGR(parts);
+        break;
       case "n":
         if (p1 === 6) return `\x1b[${this.cy + 1};${this.cx + 1}R`; // CPR
         if (p1 === 5) return "\x1b[0n"; // device status OK
@@ -377,7 +413,14 @@ export class VT100 {
         if (this.scrollTop >= this.scrollBottom) { this.scrollTop = 0; this.scrollBottom = this.rows - 1; }
         break;
       case "s": this.savedCursor = { x: this.cx, y: this.cy }; break;
-      case "u": this.cx = this.savedCursor.x; this.cy = this.savedCursor.y; break;
+      case "u":
+        if (params === "") {
+          this._moveCursor(this.savedCursor.x, this.savedCursor.y);
+        }
+        break;
+      case "c":
+        if (params === "" || p1 === 0) return "\x1b[?1;2c"; // primary device attributes
+        break;
       case "h":
         if (isPrivate) {
           for (const n of parts) {
@@ -394,6 +437,53 @@ export class VT100 {
         break;
     }
     return null;
+  }
+
+  _handleKeyboardProtocol(params) {
+    const parseNum = (value, fallback = 0) => {
+      const n = Number(String(value ?? "").split(":")[0]);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    if (params === "?") return `\x1b[?${this.keyboardProtocolFlags}u`;
+    if (params.startsWith("=")) {
+      const parts = params.slice(1).split(";");
+      const flags = parseNum(parts[0], 0);
+      const mode = parseNum(parts[1], 1);
+      if (mode === 2) this.keyboardProtocolFlags |= flags;
+      else if (mode === 3) this.keyboardProtocolFlags &= ~flags;
+      else this.keyboardProtocolFlags = flags;
+      return null;
+    }
+    if (params.startsWith(">")) {
+      const flags = parseNum(params.slice(1), 0);
+      this.keyboardProtocolStack.push(this.keyboardProtocolFlags);
+      if (this.keyboardProtocolStack.length > 32) this.keyboardProtocolStack.shift();
+      this.keyboardProtocolFlags = flags;
+      return null;
+    }
+    if (params.startsWith("<")) {
+      const count = Math.max(1, parseNum(params.slice(1), 1));
+      for (let i = 0; i < count; i++) {
+        this.keyboardProtocolFlags = this.keyboardProtocolStack.length > 0 ? this.keyboardProtocolStack.pop() : 0;
+      }
+      return null;
+    }
+    return null;
+  }
+
+  _handleXtermKeyFormat(raw) {
+    const parts = raw.slice(1).split(";").map(p => Number(p));
+    const id = parts[0];
+    const value = parts[1];
+    if (id === 4) this.formatOtherKeys = Number.isFinite(value) ? value : 0;
+  }
+
+  _handleXtermKeyModifier(raw) {
+    const parts = raw.slice(1).split(";").map(p => Number(p));
+    const id = parts[0];
+    const value = parts[1];
+    if (id === 4) this.modifyOtherKeys = Number.isFinite(value) ? value : 0;
   }
 
   _handleSGR(parts) {
@@ -459,6 +549,7 @@ export class VT100 {
     this.cells = newCells;
     this.cx = Math.min(this.cx, cols - 1);
     this.cy = Math.min(this.cy, rows - 1);
+    this.wrapPending = false;
     this.scrollTop = 0;
     this.scrollBottom = rows - 1;
   }
