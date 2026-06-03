@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0] - 2026-06-03
+- Added more alt- key bindings
+- Alt-s for Selection mode
+- Alt-d for unindent/dedent/outdent
+- Updated help md documents
+- js/python builtin objects autocomplete
+- autocomplete includes language keywords
+- Fixed unicode/emoji for term and editor
+
 ## [0.8.3] - 2026-06-02
 - Fixed Linux failed to parse php.yaml crashes the whole program
 - Fixed Linux espeak-ng args passing

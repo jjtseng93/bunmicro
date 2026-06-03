@@ -21,6 +21,7 @@
 - Ctrl-E ttspitch 1.1
 ## Easy selection
 - Mouse click on line numbers to select a range of lines
+- Alt-s to enter selection mode
 - Useful without a mouse on Android
 - Also available: Ctrl-E act SelectRight
 ## js plugin
@@ -42,6 +43,13 @@
 - Press Tab and use arrow keys to select items
 ## action/js commands
 - A complete help is at the end
+## Portability
+- One codebase. One folder. 
+- Runs on Windows, Android, Linux
+- No per-platform builds
+- No native bindings
+- No recompilation
+- Just Copy folder -> Run with Bun
 ## Version shows backends
 - bunmicro --version shows http/clipboard/tts backends
 
@@ -120,8 +128,11 @@ bun x bunmicro
 - Common editor features such as undo/redo, line numbers, Unicode support, soft wrapping, etc
 
 # Useful key bindings:
+- For a detailed help:
+- Ctrl+E > help defaultkeys
 
 - `Ctrl-Q`: Close current tab/pane, quits if it is the last tab/pane; prompts if modified
+- `Alt-q`: Close current tab/pane, quits if it is the last tab/pane; prompts if modified
 - `Ctrl-S`: Save
 - `Ctrl-O`: Open
 - `Ctrl-G`: Toggle help pane
@@ -134,9 +145,13 @@ bun x bunmicro
 - `Ctrl-B`: Shell prompt
 - `Ctrl-D`: Duplicate Line/Selection
 - `Ctrl-T`: Open a new tab
-- `Alt-G`: Toggle nano-like key bindings menu 
+- `Alt-g`: Toggle nano-like key bindings menu 
+- `Alt-h`: replace [-l] `text1` `text2`
+- `Alt-c`: Toggle comment
+- `Alt-s`: Selection mode
 - `Alt-,` / `Alt-p`: Previous tab
 - `Alt-.` / `Alt-t`: Next tab
+- `Alt-k` / `Alt-j`: Move lines Up/Down
 - `Tab`: Triggers autocomplete
 - `Esc`: close command/shell prompt or terminal pane, rehighlight long lines
 
