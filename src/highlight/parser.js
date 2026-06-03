@@ -29,11 +29,12 @@ export class SyntaxHeader {
 }
 
 export class SyntaxDefinition {
-  constructor(header, source) {
+  constructor(header, source, text = "") {
     this.header = header;
     this.filetype = header.filetype;
     this.source = source;
     this.rules = parseRules(source.rules ?? []);
+    this.autocompleteWords = scanAutocompleteWordsFromText(text);
   }
 }
 
@@ -45,15 +46,27 @@ export async function loadSyntaxDefinitions(runtime) {
 
   const definitions = [];
   for (const file of runtime.list(1)) {
-    try{
-      const source = Bun.YAML.parse(await file.text());
-      const header = headers.get(file.name) ?? parseHeaderYaml(source);
-      definitions.push(new SyntaxDefinition(header, source));
-    }catch(e){
-      console.error("Failed to parse syntax yaml:",file.name)
-      console.error("  Will not highlight this kind of file")
-      console.error("  @ loadSyntaxDefinitions ")
+    let text = "";
+    try {
+      text = await file.text();
+    } catch (e) {
+      console.error("Failed to read syntax yaml:", file.name);
+      console.error("  Will not highlight this kind of file");
+      console.error("  @ loadSyntaxDefinitions ");
+      continue;
     }
+
+    let source = null;
+    try {
+      source = Bun.YAML.parse(text);
+    } catch (e) {
+      console.error("Failed to parse syntax yaml:", file.name);
+      console.error("  Will not highlight this kind of file");
+      console.error("  @ loadSyntaxDefinitions ");
+    }
+
+    const header = headers.get(file.name) ?? (source ? parseHeaderYaml(source) : parseHeaderTextFallback(text, file.name));
+    definitions.push(new SyntaxDefinition(header, source ?? { rules: [] }, text));
   }
   return definitions;
 }
@@ -84,6 +97,61 @@ export function parseHeaderYaml(source) {
     header: source?.detect?.header ?? "",
     signature: source?.detect?.signature ?? "",
   });
+}
+
+function parseHeaderTextFallback(text, fileName = "") {
+  const source = String(text ?? "");
+  const fallbackType = String(fileName).replace(/\.ya?ml$/i, "");
+  const filetype = rawYamlScalar(source.match(/^filetype:[ \t]*(.*)$/m)?.[1]) || fallbackType;
+  return new SyntaxHeader({
+    filetype,
+    filename: rawYamlDetectScalar(source, "filename"),
+    header: rawYamlDetectScalar(source, "header"),
+    signature: rawYamlDetectScalar(source, "signature"),
+  });
+}
+
+function rawYamlDetectScalar(text, key) {
+  const detect = text.match(/^detect:[ \t]*(?:#.*)?(?:\r?\n)((?:[ \t]+[^\n]*\r?\n?)*)/m)?.[1] ?? "";
+  return rawYamlScalar(detect.match(new RegExp(`^[ \t]+${key}:[ \t]*(.*)$`, "m"))?.[1]);
+}
+
+function rawYamlScalar(value) {
+  if (value == null) return "";
+  let out = String(value).trim();
+  if (!out) return "";
+  if (out.startsWith("\"") && out.endsWith("\"")) {
+    try { return JSON.parse(out); } catch { return out.slice(1, -1); }
+  }
+  if (out.startsWith("'") && out.endsWith("'")) return out.slice(1, -1).replaceAll("''", "'");
+  return out;
+}
+
+function scanAutocompleteWordsFromText(text) {
+  const source = String(text ?? "");
+  const words = [];
+  const seen = new Set();
+  let i = 0;
+  while (i < source.length) {
+    if (!isSyntaxWordChar(source[i])) { i++; continue; }
+    let j = i;
+    while (j < source.length && isSyntaxWordChar(source[j])) j++;
+    const word = source.slice(i, j);
+    if (!seen.has(word)) {
+      seen.add(word);
+      words.push(word);
+    }
+    i = j;
+  }
+  return words;
+}
+
+function isSyntaxWordChar(ch) {
+  if (!ch) return false;
+  const cp = ch.codePointAt(0);
+  if ((cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || (cp >= 48 && cp <= 57) || cp === 95) return true;
+  if (cp <= 127) return false;
+  return /\p{L}|\p{N}/u.test(ch);
 }
 
 function parseRules(rules) {
