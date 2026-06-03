@@ -180,6 +180,11 @@ function registerBuiltinActions() {
       buf.modified = true;
     }
   });
+  // Aliases for OutdentSelection / OutdentLine
+  reg("DedentSelection",   (app) => ACTIONS.get("OutdentSelection")(app));
+  reg("UnindentSelection", (app) => ACTIONS.get("OutdentSelection")(app));
+  reg("DedentLine",        (app) => ACTIONS.get("OutdentLine")(app));
+  reg("UnindentLine",      (app) => ACTIONS.get("OutdentLine")(app));
 
   // Editing
   reg("Backspace",          (app) => app.buffer?.backspace());

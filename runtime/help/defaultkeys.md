@@ -52,6 +52,8 @@ can change it!
 | Ctrl-n    | Find next instance of current search      |
 | Ctrl-p    | Find previous instance of current search  |
 
+| Alt-h     | Open command prompt to replace keywords   |
+
 Note: `Ctrl-n` and `Ctrl-p` should be used from the main buffer, not from inside
 the search prompt. After `Ctrl-f`, press enter to complete the search and then
 you can use `Ctrl-n` and `Ctrl-p` to cycle through matches.
@@ -87,7 +89,10 @@ you can use `Ctrl-n` and `Ctrl-p` to cycle through matches.
 | Alt-DownArrow Alt-j                 | Move current line or selected lines down  |
 | Alt-Backspace or Alt-Ctrl-h         | Delete word left                          |
 | Ctrl-a                              | Select all                                |
+| Alt-s                               | Enter Selection mode                      |
+| Alt-c                               | Toggle comment for lines                  |
 | Tab                                 | Indent selected text                      |
+| Alt-d                               | Dedent selected text                      |
 | Shift-Tab                           | Unindent selected text                    |
 
 ### Macros(not implemented yet)
@@ -119,6 +124,7 @@ you can use `Ctrl-n` and `Ctrl-p` to cycle through matches.
 | Ctrl-r    | Toggle the line number ruler                                                          |
 
 ### Emacs style actions
+- not implemented yet
 
 | Key       | Description of function   |
 |---------- |-------------------------- |
@@ -128,6 +134,7 @@ you can use `Ctrl-n` and `Ctrl-p` to cycle through matches.
 | Alt-e     | Move to end of line       |
 
 ### Function keys.
+- not implemented yet
 
 Warning! The function keys may not work in all terminals!
 

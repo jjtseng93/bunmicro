@@ -18,13 +18,16 @@ To quit, press `Ctrl-q`. Save by pressing `Ctrl-s`. Press `Ctrl-e`, as previousl
 mentioned, to start typing commands. To see which commands are available, at the
 prompt, press tab, or view the help topic with `> help commands`.
 
-Move the cursor around with the mouse or with the arrow keys. Enter text simply
-by pressing character keys.
+- Move the cursor around with the mouse or with the arrow keys.
+- Enter text simply by pressing character keys.
 
-If the colorscheme doesn't look good, you can change it with
-`> set colorscheme ...`. You can press tab to see the available colorschemes,
-or see more information about colorschemes and syntax highlighting with `> help
-colors`.
+- If the colorscheme doesn't look good, change it with either of the below:
+`> set colorscheme ...`
+`> theme ...` (bunmicro only)
+- You can press tab to see the available colorschemes, and preview with arrow keys
+- see more information about colorschemes and syntax highlighting with
+- `> help colors`
+
 
 Press `Ctrl-w` to move between splits, and type `> vsplit filename` or
 `> hsplit filename` to open a new split.
@@ -33,9 +36,11 @@ Press `Ctrl-w` to move between splits, and type `> vsplit filename` or
 
 Micro has a built-in help system which can be accessed with the `> help` command.
 
-To view help for the various available topics, press `Ctrl-e` to access command
-mode and type in `> help` followed by a topic. Typing just `> help` will open
-this page.
+- To view help for a specific topic, 
+- press `Ctrl-e` to access command mode and type in `> help` followed by a topic.
+- Use Tab to see available topics
+- Typing just `> help` will open this page.
+
 
 Here are the available help topics:
 

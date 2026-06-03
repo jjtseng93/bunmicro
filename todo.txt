@@ -30,6 +30,10 @@ Current handoff notes
     - Matchbrace highlights (), {}, [] and statusline column click cycles between matched braces when cursor is on a matched brace.
     - Ctrl-C/Ctrl-X/Ctrl-V/Ctrl-Y work for line and selection clipboard flows; external clipboard failures fall back to the internal register.
     - Copy/cut/paste and similar status messages render on a standalone info row above the statusline.
+[x] term pane Unicode input/output support:
+    - PTY output now uses a streaming UTF-8 decoder so multi-byte Unicode split across chunks is preserved.
+    - VT100 printable handling iterates by code point, stores combining marks on the base cell, and uses filler cells for wide CJK/emoji output.
+    - Terminal pane rendering skips filler cells and emits combining marks through Screen.SetContent.
 [x] replace/replaceall commands aligned with Go behavior:
     - Flags: -a (replace all at once), -l (literal/no-regex, uses RegExp.escape).
     - replace without -a shows interactive Y/N prompt per match (Perform replacement (y,n,esc)).

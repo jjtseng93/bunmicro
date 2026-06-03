@@ -190,10 +190,22 @@ function isWideCodePoint(cp) {
     (cp >= 0x1F004 && cp <= 0x1F0CF) ||
     (cp >= 0x1F18F && cp <= 0x1F19A) ||
     (cp >= 0x1F200 && cp <= 0x1F2FF) ||
-    (cp >= 0x1F300 && cp <= 0x1F64F) ||
-    (cp >= 0x1F900 && cp <= 0x1F9FF) ||
+    (cp >= 0x1F300 && cp <= 0x1FAFF) ||
     (cp >= 0x20000 && cp <= 0x2FFFD) ||
     (cp >= 0x30000 && cp <= 0x3FFFD)
+  );
+}
+
+function isZeroWidthCodePoint(cp) {
+  return (
+    cp === 0x200D ||
+    (cp >= 0x0300 && cp <= 0x036F) ||
+    (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+    (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+    (cp >= 0x20D0 && cp <= 0x20FF) ||
+    (cp >= 0xFE00 && cp <= 0xFE0F) ||
+    (cp >= 0xFE20 && cp <= 0xFE2F) ||
+    (cp >= 0xE0100 && cp <= 0xE01EF)
   );
 }
 
@@ -201,14 +213,56 @@ function charWidth(ch) {
   if (!ch) return 0;
   const cp = ch.codePointAt(0);
   if (cp === 9) return DEFAULT_SETTINGS.tabsize;
-  if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
+  if (cp < 32 || (cp >= 0x7f && cp < 0xa0) || isZeroWidthCodePoint(cp)) return 0;
   if (isWideCodePoint(cp)) return 2;
   return 1;
 }
 
+function isEmojiVariationBase(cp) {
+  return (
+    cp === 0x00A9 || cp === 0x00AE ||
+    cp === 0x203C || cp === 0x2049 ||
+    cp === 0x2122 || cp === 0x2139 ||
+    (cp >= 0x2194 && cp <= 0x21AA) ||
+    (cp >= 0x231A && cp <= 0x231B) ||
+    cp === 0x2328 || cp === 0x23CF ||
+    (cp >= 0x23E9 && cp <= 0x23F3) ||
+    (cp >= 0x23F8 && cp <= 0x23FA) ||
+    cp === 0x24C2 ||
+    (cp >= 0x25AA && cp <= 0x25AB) ||
+    cp === 0x25B6 || cp === 0x25C0 ||
+    (cp >= 0x25FB && cp <= 0x25FE) ||
+    (cp >= 0x2600 && cp <= 0x27BF) ||
+    (cp >= 0x2934 && cp <= 0x2935) ||
+    (cp >= 0x2B05 && cp <= 0x2B55) ||
+    cp === 0x3030 || cp === 0x303D ||
+    cp === 0x3297 || cp === 0x3299
+  );
+}
+
+function displayUnitAt(text, idx) {
+  const cp = text.codePointAt(idx);
+  if (cp == null) return { text: "", width: 0, length: 0 };
+  let length = cp > 0xFFFF ? 2 : 1;
+  let unit = String.fromCodePoint(cp);
+  let width = charWidth(unit);
+  const nextCp = text.codePointAt(idx + length);
+  if (nextCp === 0xFE0F && isEmojiVariationBase(cp)) {
+    unit += String.fromCodePoint(nextCp);
+    length += 1;
+    width = 2;
+  }
+  return { text: unit, width, length };
+}
+
 function displayWidth(text) {
   let width = 0;
-  for (const ch of text) width += charWidth(ch);
+  for (let i = 0; i < text.length;) {
+    const unit = displayUnitAt(text, i);
+    if (unit.length <= 0) break;
+    width += unit.width;
+    i += unit.length;
+  }
   return width;
 }
 
@@ -258,6 +312,16 @@ function charIdxForScrollRight(line, cursorX, visibleCols) {
     i = prevI;
   }
   return i;
+}
+
+function normalizeCharBoundary(line, idx) {
+  idx = clamp(idx, 0, line.length);
+  if (idx > 0 && idx < line.length) {
+    const prev = line.charCodeAt(idx - 1);
+    const cur = line.charCodeAt(idx);
+    if (prev >= 0xD800 && prev <= 0xDBFF && cur >= 0xDC00 && cur <= 0xDFFF) return idx - 1;
+  }
+  return idx;
 }
 
 // --- Softwrap utilities (ported from Go internal/display/softwrap.go) ---
@@ -581,7 +645,7 @@ class BufferModel {
 
   ensureCursor() {
     this.cursor.y = clamp(this.cursor.y, 0, this.lines.length - 1);
-    this.cursor.x = clamp(this.cursor.x, 0, this.line().length);
+    this.cursor.x = normalizeCharBoundary(this.line(), this.cursor.x);
   }
 
   invalidateHighlightFrom(lineNo = 0, options = {}) {
@@ -1038,6 +1102,13 @@ class BufferModel {
         }
       }
     }
+    const syntaxWords = this.syntaxDefinition?.autocompleteWords ?? [];
+    for (const w of syntaxWords) {
+      if (w.length > wordLen && w.startsWith(word) && !seen.has(w)) {
+        seen.add(w);
+        suggestions.push(w);
+      }
+    }
     if (suggestions.length === 0) return false;
     if (suggestions.length === 1) {
       // Single match: insert suffix directly without entering cycling mode
@@ -1252,6 +1323,7 @@ class TerminalPane {
     this.app = app;
     this.proc = null;
     this.vt = null;
+    this.decoder = new TextDecoder();
   }
 
   open(cols, rows) {
@@ -1269,7 +1341,8 @@ class TerminalPane {
         cols,
         rows,
         data: (_terminal, data) => {
-          const text = decoder.decode(data);
+          const text = this.decoder.decode(data, { stream: true });
+          if (!text) return;
           const responses = this.vt.feed(text);
           for (const resp of responses) this.proc?.terminal?.write(resp);
           this.app.render();
@@ -1464,9 +1537,10 @@ class App {
       const resize = this.screen.updateSize();
       this.rows = resize.rows;
       this.cols = resize.cols;
+      this.layoutEditorArea();
       for (const tab of this.tabs)
         for (const p of tab.panes())
-          if (p.type === "term") p.terminal?.resize(p.w, Math.max(4, p.h));
+          if (p.type === "term") p.terminal?.resize(p.w, Math.max(4, p.h - 1));
       if (!this.shellRunning && !this._alertRunning) this.render();
     });
     process.on("SIGINT", () => {}); // Ctrl+C is handled as copy in handleEvent
@@ -1500,9 +1574,7 @@ class App {
     process.exit(code);
   }
 
-  render() {
-    if (!this.running) return;
-    const tab = this.tab;
+  layoutEditorArea() {
     const promptHeight = this.prompt ? 1 : 0;
     const tabBarHeight = this.tabs.length > 1 ? 1 : 0;
     const keymenuHeight = this.keymenu ? KEYDISPLAY.length : 0;
@@ -1517,14 +1589,39 @@ class App {
     const editorAreaH = Math.max(1, this.rows - 1 - promptHeight - tabBarHeight - keymenuHeight - infoHeight);
     const statusRow = this.rows - promptHeight - 1;
 
+    for (const tab of this.tabs) computeLayout(tab.root, 0, editorAreaTop, this.cols, editorAreaH);
+
+    return {
+      tabBarHeight,
+      keymenuHeight,
+      activeSuggestions,
+      activeSuggestionIdx,
+      activeMessage,
+      suggestionsHeight,
+      messageHeight,
+      statusRow,
+    };
+  }
+
+  render() {
+    if (!this.running) return;
+    const tab = this.tab;
+    const {
+      tabBarHeight,
+      keymenuHeight,
+      activeSuggestions,
+      activeSuggestionIdx,
+      activeMessage,
+      suggestionsHeight,
+      messageHeight,
+      statusRow,
+    } = this.layoutEditorArea();
+
     const defaultStyle = this.context.colorscheme?.defaultStyle ?? {};
     this.screen.fill(" ", defaultStyle);
 
     this.tabRects = [];
     if (tabBarHeight) this.renderTabbar(defaultStyle);
-
-    // Compute pane rects for this tab
-    computeLayout(tab.root, 0, editorAreaTop, this.cols, editorAreaH);
 
     // Center scroll for any buffer restored from savecursor (deferred until layout is known)
     for (const p of tab.panes()) {
@@ -1649,8 +1746,9 @@ class App {
       if (softwrap) {
         const scrollSloc = { line: buf.scroll.y, row: buf.scroll.row ?? 0 };
         const cursorLine = buf.lines[buf.cursor.y] ?? "";
+        const cursorX = normalizeCharBoundary(cursorLine, buf.cursor.x);
         const cursorBreaks = softwrapBreaks(cursorLine, bufW, wordwrap, tabsize);
-        const cursorSubRow = softwrapRowOfCharIdx(cursorBreaks, buf.cursor.x);
+        const cursorSubRow = softwrapRowOfCharIdx(cursorBreaks, cursorX);
         const cursorSloc = { line: buf.cursor.y, row: cursorSubRow };
         const cursorAbove = cursorSloc.line < scrollSloc.line ||
           (cursorSloc.line === scrollSloc.line && cursorSloc.row < scrollSloc.row);
@@ -1659,10 +1757,12 @@ class App {
           : slocDiff(buf.lines, scrollSloc, cursorSloc, bufW, wordwrap, tabsize);
         cursorRow = p.y + visualRowOffset;
         const segStart = cursorBreaks[cursorSubRow] ?? 0;
-        cursorCol = p.x + gutterW + displayWidth(cursorLine.slice(segStart, buf.cursor.x));
+        cursorCol = p.x + gutterW + displayWidth(cursorLine.slice(segStart, cursorX));
       } else {
+        const line = buf.line();
+        const cursorX = normalizeCharBoundary(line, buf.cursor.x);
         cursorRow = p.y + buf.cursor.y - buf.scroll.y;
-        cursorCol = p.x + gutterW + displayWidth(buf.line().slice(buf.scroll.x, buf.cursor.x));
+        cursorCol = p.x + gutterW + displayWidth(line.slice(buf.scroll.x, cursorX));
       }
 
       const cursorVisible = cursorRow >= p.y && cursorRow < p.y + p.h && cursorCol >= p.x && cursorCol < p.x + p.w;
@@ -1891,11 +1991,16 @@ class App {
       for (let col = 0; col < Math.min(pane.w, vt.cols); col++) {
         const cell = vtRow[col];
         if (!cell) continue;
-        this.screen.setContent(pane.x + col, pane.y + 1 + row, cell.ch || " ", {
+        const style = {
           fg: cell.fg, bg: cell.bg,
           bold: cell.bold, italic: cell.italic,
           underline: cell.underline, reverse: cell.reverse,
-        });
+        };
+        if (cell.filler) {
+          this.screen.setFillerContent(pane.x + col, pane.y + 1 + row, style);
+          continue;
+        }
+        this.screen.setContent(pane.x + col, pane.y + 1 + row, cell.ch || " ", style, cell.combining ?? []);
       }
     }
     // Show VT cursor only when live (not scrolled back) and active
@@ -2316,6 +2421,7 @@ class App {
     switch (seq) {
       case "escape": {
         this.pane.selection = null;
+        this._markSelStart = null;
         if (buf) buf.searchPattern = "";
         const count = forceRehighlightDirtyLongLines(buf, this);
         if (count > 0) this.message = `Rehighlighted ${count} long line${count === 1 ? "" : "s"}`;
@@ -2620,6 +2726,20 @@ class App {
       case "alt-down":
         await runAction("MoveLinesDown", this);
         break;
+      case "alt-d": //DedentSelection
+        await runAction("OutdentSelection", this);
+        break;
+      case "alt-s": { //Mark selection start / extend selection to mark
+        if (!this._markSelStart) {
+          this._markSelStart = { ...buf.cursor };
+          this.message = "selectionStart, ESC:cancel";
+        } else {
+          this.pane.selection = { start: { ...this._markSelStart }, end: { ...buf.cursor } };
+          buf.cursor = { ...buf.cursor };
+          this.message = "selectionEnd, ESC:cancel";
+        }
+        break;
+      }
       case "alt-p": //PreviousTab
         await runAction("PreviousTab", this);
         break;
@@ -5285,8 +5405,11 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
   let i = scrollX;
   while (i < raw.length && width < maxWidth) {
     const cp = raw.codePointAt(i);
-    const ch = String.fromCodePoint(cp);
-    const charLen = cp > 0xFFFF ? 2 : 1;
+    const unit = displayUnitAt(raw, i);
+    const ch = unit.text;
+    const charLen = unit.length;
+    const w = unit.width;
+    if (charLen <= 0) break;
     while (changeIndex + 1 < changes.length && i >= changes[changeIndex + 1][0]) changeIndex++;
     const group = changes[changeIndex]?.[1] ?? "default";
     const syntaxStyle = colorscheme?.get(group) ?? colorscheme?.defaultStyle ?? {};
@@ -5311,13 +5434,12 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     if (selected) {
       style = { ...style, reverse: !style.reverse };
     }
-    const w = charWidth(ch);
     if (ch === "\t") {
       const spaces = Math.min(DEFAULT_SETTINGS.tabsize, maxWidth - width);
       for (let j = 0; j < spaces; j++) cells.push({ ch: " ", style });
       width += spaces;
     } else if (w > 0 && width + w <= maxWidth) {
-      cells.push({ ch, style, wide: w === 2 });
+      cells.push({ ch, style, width: w });
       width += w;
     }
     i += charLen;
@@ -5333,20 +5455,29 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
 function putText(screen, x, y, text, style = null, maxWidth = Infinity) {
   let col = x;
   let width = 0;
-  for (const ch of String(text)) {
+  const str = String(text);
+  for (let i = 0; i < str.length;) {
     if (width >= maxWidth) break;
+    const unit = displayUnitAt(str, i);
+    const ch = unit.text;
+    const w = unit.width;
+    if (unit.length <= 0) break;
     if (ch === "\t") {
       const spaces = Math.min(DEFAULT_SETTINGS.tabsize, maxWidth - width);
       for (let i = 0; i < spaces; i++) screen.setContent(col++, y, " ", style);
       width += spaces;
+      i += unit.length;
       continue;
     }
-    const w = charWidth(ch);
-    if (w <= 0 || width + w > maxWidth) continue;
+    if (w <= 0 || width + w > maxWidth) {
+      i += unit.length;
+      continue;
+    }
     screen.setContent(col, y, ch, style);
     if (w === 2) screen.setFillerContent(col + 1, y, style);
     col += w;
     width += w;
+    i += unit.length;
   }
   return col;
 }
@@ -5356,7 +5487,7 @@ function putCells(screen, x, y, cells, maxWidth = Infinity) {
   let width = 0;
   for (const cell of cells) {
     if (width >= maxWidth) break;
-    const w = charWidth(cell.ch);
+    const w = cell.width ?? charWidth(cell.ch);
     if (w <= 0 || width + w > maxWidth) continue;
     screen.setContent(col, y, cell.ch, cell.style);
     if (w === 2) screen.setFillerContent(col + 1, y, cell.style);
