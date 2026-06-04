@@ -68,6 +68,12 @@ Current handoff notes
     - Lines over 300 chars keep their old cached highlight/state when dirtied, mark the row dirty, and defer full rehighlight until Esc.
     - Dirty long lines render red in the gutter and in the statusline row field.
     - Startup and Esc rehighlight show colorful bottom progress by highlighted character count, wrapped with Bun.wrapAnsi.
+[x] Recent 0.9.x updates:
+    - Added hex3 encoding for binary edit/open/save paths and encoding completion.
+    - --cat/--bat-style highlighting supports HTTP/HTTPS URLs.
+    - Terminal pane close behavior improved: exited terminals show "Press enter to close" and Enter closes/restores the pane.
+    - Added Alt-s selection mode plus more Alt key help/defaultkey documentation.
+    - Added Dedent/Unindent action aliases for outdent actions.
 [!] Known follow-up: syntax detection still needs Go parity. todo.txt can be misdetected as filetype B because signatures are considered globally instead of only disambiguating filename/header matches.
 [!] Known tool note: apply_patch is currently unreliable in this environment; use Bun scripts for small file edits.
 
@@ -76,7 +82,9 @@ Screen / tcell parity
 [x] Replace current whole-string renderer with CellBuffer-backed rendering and diff flush.
 [x] Implement Screen.SetContent/GetContent/Fill/Show equivalents over CellBuffer.
 [x] Preserve per-cell style and wide-char handling: Cell.filler for double-width right-half, Screen.Show skips filler cells, putText/putCells advance col by visual width, setFillerContent added to Screen/CellBuffer.
-[ ] Preserve combining chars (zero-width combining marks stored alongside base char).
+[~] Preserve combining chars (zero-width combining marks stored alongside base char).
+    Done: CellBuffer/Screen/VT100 store combining marks alongside the base cell and terminal pane rendering emits them through Screen.SetContent.
+    Remaining: editor text rendering still needs grapheme-cluster-level behavior for combining marks and ZWJ sequences.
 [ ] Implement fake cursor and multi-cursor reverse styling behavior.
 [ ] Add raw escape registration/unregistration equivalent to tcell RegisterRawSeq.
 [~] Add complete bracketed paste event handling across split input chunks.
@@ -105,6 +113,7 @@ Buffer / editing model
 [~] Implement save options: fileformat, encoding, eofnewline, rmtrailingws, mkparents, autosu/sucmd behavior.
     Done: eofnewline save behavior exists; fileformat status/toggle exists; encoding decode/reopen supports Bun TextDecoder labels including common CJK encodings, and statusline encoding click pre-fills reopen with encoding completion.
     Done: saving a non-UTF-8-decoded buffer prompts "Save in UTF-8?(y,n)" before converting the buffer to UTF-8 on disk.
+    Done: hex3 encoding supports binary edit/open/save paths without UTF-8 conversion prompt.
     Remaining: non-UTF-8 save/encode, rmtrailingws, mkparents, autosu/sucmd, full fileformat behavior parity.
 [ ] Implement backup recovery and permbackup behavior.
 [~] Implement savecursor and saveundo serialization.
@@ -194,8 +203,8 @@ Lua plugin parity
     Done: minimal Buf/BufPane/Cursor adapters support autoclose-style Line/Insert/Replace/cursor movement and option access.
     Remaining: real BufPane/Cursor/Buffer object parity, selections, multi-cursor, Tab/TabList APIs, InfoPane/Log/Raw buffers.
 [~] Implement all plugin lifecycle hooks: preinit, init, postinit, onRune, preInsertNewline, preBackspace, onSave, onBufferOpen, onBufferOptionChanged, onAnyEvent, etc.
-    Done: preinit/init/postinit, onRune, preInsertNewline, preBackspace, onSave, onBufferOpen, onSetActive/onBufferClose are dispatched in current editor paths.
-    Remaining: onBufferOptionChanged, onAnyEvent, deinit/reload hooks, full action hook coverage, exact args/return behavior.
+    Done: preinit/init/postinit, onRune, preInsertNewline, preBackspace, onSave, onBufferOpen, onSetActive/onBufferClose, onBufferOptionChanged are dispatched in current editor paths.
+    Remaining: onAnyEvent, deinit/reload hooks, full action hook coverage, exact args/return behavior.
 [~] Ensure Lua return values can cancel operations where Go micro expects bool false.
     Done: PluginManager.runBool treats false as cancellation and is wired for preBackspace/preInsertNewline.
     Remaining: all cancellable actions/hooks need to use the same path and match Go micro semantics.
@@ -291,7 +300,9 @@ Shell / jobs / terminal pane
 [x] Implement Ctrl-B ShellMode prompt and shell command execution with temporary screen fini/start behavior.
 [x] Improve Bun PTY terminal pane rendering using terminal state/cell emulation instead of raw line log.
     VT100 class in src/screen/vt100.js: CSI cursor/erase/SGR/scroll, CPR response, OSC strip.
-[ ] Implement terminal selection/copy and close behavior parity.
+[~] Implement terminal selection/copy and close behavior parity.
+    Done: exited terminal panes can be closed with Enter and restore the previous editor buffer when available.
+    Remaining: terminal selection/copy and full close behavior parity.
 [ ] Verify Bun.spawn stdio usage everywhere; PTY terminal option remains separate.
 [x] Shared HTTP backend in platform/commands.js: fetchHttp(url) and downloadFile(url, outPath).
     Priority: Bun.which detects curl (curl -kL --silent --fail) or wget (wget --no-check-certificate -q -O -),

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.9] - 2026-06-04
+- Added long line protection for softwrap
+  * That means binary edits available
+  * you can now open libc.so.6
+  * Ctrl+E reopen hex3 to edit & save
+- Fixed softwrap search match cross line
+
 ## [0.9.5] - 2026-06-03
 - Added encoding hex3 for binary edit
 - term better supports fish

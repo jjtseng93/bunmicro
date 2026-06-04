@@ -101,6 +101,8 @@ const DEFAULT_SETTINGS = {
 };
 
 const LONG_LINE_REHIGHLIGHT_LIMIT = 300;
+// Lines exceeding this are never highlighted interactively; stored as default and deferred to Esc.
+const LONG_LINE_INITIAL_HIGHLIGHT_LIMIT = 10_000;
 
 const promptHistory = new Map();
 let startupHighlightProgress = null;
@@ -340,8 +342,11 @@ function normalizeCharBoundary(line, idx) {
 // breaks[0] === 0 always. breaks[k] is the start of visual row k within `line`.
 // Tabs are treated as `tabsize` columns wide (consistent with the renderer).
 // With wordwrap=true, breaks at word boundaries; with wordwrap=false, hard-wraps at bufWidth.
+let _swCacheLine = null, _swCacheBufWidth = 0, _swCacheWordwrap = false, _swCacheTabsize = 4, _swCacheBreaks = null;
 function softwrapBreaks(line, bufWidth, wordwrap, tabsize) {
   if (bufWidth <= 0) return [0];
+  if (line === _swCacheLine && bufWidth === _swCacheBufWidth && wordwrap === _swCacheWordwrap && tabsize === _swCacheTabsize)
+    return _swCacheBreaks;
   const breaks = [0];
   let visualX = 0;    // display col within current visual row
   let wordStart = 0;  // code-unit index of current word start
@@ -381,6 +386,7 @@ function softwrapBreaks(line, bufWidth, wordwrap, tabsize) {
     }
   }
 
+  _swCacheLine = line; _swCacheBufWidth = bufWidth; _swCacheWordwrap = wordwrap; _swCacheTabsize = tabsize; _swCacheBreaks = breaks;
   return breaks;
 }
 
@@ -569,6 +575,9 @@ function parseInput(args) {
 }
 
 class BufferModel {
+  get searchPattern() { return this._searchPattern ?? ""; }
+  set searchPattern(v) { this._searchPattern = v ?? ""; this.searchMatches?.clear(); }
+
   constructor({ path = "", text = "", command = {}, type = "default", readonly = false, modTimeMs = null, encoding = DEFAULT_SETTINGS.encoding } = {}) {
     this.path = path;
     this.type = type;
@@ -589,6 +598,7 @@ class BufferModel {
     this.acSuggestions = [];
     this.acCompletions = [];
     this.acCurIdx = -1;
+    this.searchMatches = new Map();
     this.searchPattern = "";
     this.command = command;
     this.filetype = "unknown";
@@ -660,6 +670,8 @@ class BufferModel {
 
   invalidateHighlightFrom(lineNo = 0, options = {}) {
     this._editRev = (this._editRev ?? 0) + 1;
+    if (options.force) this.searchMatches?.clear();
+    else this.searchMatches?.delete(lineNo);
     invalidateHighlightFrom(this, lineNo, options);
   }
 
@@ -2066,12 +2078,14 @@ class App {
         const isCL = clBg && lineNo === buf.cursor.y && !pane.selection;
         if (gutterW > 0) renderGutter(lineNo, row, screenRow);
         if (lineNo < buf.lines.length) {
-          const cells = renderHighlightedCells(buf, lineNo, buf.scroll.x, maxW, this.context.colorscheme, pane.selection, buf.searchPattern, braceMatches, isCL ? clBg : null);
+          const cells = renderHighlightedCells(buf, lineNo, buf.scroll.x, maxW, this.context.colorscheme, pane.selection, getLineSearchRanges(buf, lineNo), braceMatches, isCL ? clBg : null);
           putCells(this.screen, pane.x + gutterW, screenRow, cells, maxW);
         }
       }
     } else {
       let sloc = { line: buf.scroll.y, row: buf.scroll.row ?? 0 };
+      let _swBreaksLineNo = -1, _swBreaks = null;
+      let _swSearchLineNo = -1, _swSearchRanges = [];
       for (let screenY = 0; screenY < pane.h; screenY++) {
         const screenRow = pane.y + screenY;
         const { line: lineNo, row: subRow } = sloc;
@@ -2079,13 +2093,15 @@ class App {
         if (lineNo >= buf.lines.length) break;
 
         const lineStr = buf.lines[lineNo] ?? "";
-        const breaks = softwrapBreaks(lineStr, maxW, wordwrap, tabsize);
+        if (lineNo !== _swBreaksLineNo) { _swBreaks = softwrapBreaks(lineStr, maxW, wordwrap, tabsize); _swBreaksLineNo = lineNo; }
+        if (lineNo !== _swSearchLineNo) { _swSearchRanges = getLineSearchRanges(buf, lineNo); _swSearchLineNo = lineNo; }
+        const breaks = _swBreaks;
         const segStart = breaks[subRow] ?? 0;
         const isCL = clBg && lineNo === buf.cursor.y && !pane.selection;
 
         if (gutterW > 0) renderGutter(lineNo, screenY, screenRow, subRow);
 
-        const cells = renderHighlightedCells(buf, lineNo, segStart, maxW, this.context.colorscheme, pane.selection, buf.searchPattern, braceMatches, isCL ? clBg : null);
+        const cells = renderHighlightedCells(buf, lineNo, segStart, maxW, this.context.colorscheme, pane.selection, _swSearchRanges, braceMatches, isCL ? clBg : null);
         putCells(this.screen, pane.x + gutterW, screenRow, cells, maxW);
 
         if (subRow + 1 < breaks.length) {
@@ -4995,6 +5011,15 @@ function highlightBufferLine(buf, lineNo) {
     if (!cache.forceLongLineRehighlight && cache.dirtyLongLines.has(y) && cache.results[y]) {
       result = cache.results[y];
       state = cache.states[y] ?? null;
+    } else if (!cache.forceLongLineRehighlight && line.length > LONG_LINE_INITIAL_HIGHLIGHT_LIMIT) {
+      // Too long to highlight interactively — store a default result and mark dirty for Esc rehighlight.
+      if (!cache.results[y]) {
+        cache.results[y] = { changes: new Map([[0, "default"], [line.length, "default"]]), state: null };
+        cache.states[y] = null;
+      }
+      result = cache.results[y];
+      state = null;
+      cache.dirtyLongLines.add(y);
     } else {
       const progress = startupHighlightProgress
         ? (pos) => startupHighlightProgress.linePosition(pos, y, target)
@@ -5031,6 +5056,11 @@ function invalidateHighlightFrom(buf, lineNo = 0, { force = false } = {}) {
   if (!cache) return;
   const from = Math.max(0, Math.trunc(Number(lineNo) || 0));
   const line = buf.lines[from] ?? "";
+  // Hard limit: never clear cache for very long lines even on force — mark dirty instead.
+  if (line.length > LONG_LINE_INITIAL_HIGHLIGHT_LIMIT && cache.results[from]) {
+    cache.dirtyLongLines.add(from);
+    return;
+  }
   if (!force && line.length > LONG_LINE_REHIGHLIGHT_LIMIT && cache.results[from]) {
     cache.dirtyLongLines.add(from);
     return;
@@ -5452,6 +5482,7 @@ function findMatchingBracePositions(buf) {
 
 function findMatchingBracePair(buf) {
   if (!(buf?.Settings?.matchbrace ?? DEFAULT_SETTINGS.matchbrace)) return null;
+  if ((buf.lines[buf.cursor.y] ?? "").length > LONG_LINE_INITIAL_HIGHLIGHT_LIMIT) return null;
   const left = braceAt(buf, buf.cursor.x - 1, buf.cursor.y);
   const right = braceAt(buf, buf.cursor.x, buf.cursor.y);
   let origin = null;
@@ -5509,7 +5540,7 @@ function braceKey(loc) {
   return String(loc.y) + ":" + String(loc.x);
 }
 
-function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, selection = null, searchPattern = "", braceMatches = null, cursorLineBg = null) {
+function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, selection = null, searchRanges = [], braceMatches = null, cursorLineBg = null) {
   const raw = buf.lines[lineNo] ?? "";
   const cells = [];
   let width = 0;
@@ -5520,8 +5551,6 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     if (changes.length === 0 || changes[0][0] !== 0) changes.unshift([0, "default"]);
     changes.push([raw.length, changes.at(-1)?.[1] ?? "default"]);
   }
-
-  const searchRanges = searchPattern ? getSearchRanges(raw, searchPattern, buf.Settings?.ignorecase ?? true) : [];
   // Go: cursor-line bg is skipped when a syntax style already has a non-default background (preservebg)
   const defBg = colorscheme?.defaultStyle?.bg ?? "default";
 
@@ -5537,6 +5566,7 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     : null;
 
   let changeIndex = 0;
+  let searchIdx = 0;
   let i = scrollX;
   while (i < raw.length && width < maxWidth) {
     const cp = raw.codePointAt(i);
@@ -5550,7 +5580,8 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     const syntaxStyle = colorscheme?.get(group) ?? colorscheme?.defaultStyle ?? {};
     const preservebg = cursorLineBg != null && syntaxStyle.bg !== undefined && syntaxStyle.bg !== defBg;
     const baseStyle = (cursorLineBg && !preservebg) ? { ...syntaxStyle, bg: cursorLineBg } : syntaxStyle;
-    const inSearch = searchRanges.some(([from, to]) => i >= from && i < to);
+    while (searchIdx < searchRanges.length && searchRanges[searchIdx][1] <= i) searchIdx++;
+    const inSearch = searchIdx < searchRanges.length && i >= searchRanges[searchIdx][0] && i < searchRanges[searchIdx][1];
     const selected = isSelected(selection, lineNo, i, i + charLen);
     const braceMatched = braceMatches?.has(String(lineNo) + ":" + String(i));
     let style = (showTrailingWs && i >= trailingWsIdx) ? trailingWsStyle : baseStyle;
@@ -5657,7 +5688,17 @@ function allMatchPositions(text, re, literal) {
   return positions;
 }
 
-function getSearchRanges(line, pattern, ignoreCase = false) {
+function getLineSearchRanges(buf, lineNo) {
+  if (!buf.searchPattern) return [];
+  if (!buf.searchMatches.has(lineNo)) {
+    const raw = buf.lines[lineNo] ?? "";
+    const ignoreCase = buf.Settings?.ignorecase ?? true;
+    buf.searchMatches.set(lineNo, getSearchRanges(raw, buf.searchPattern, ignoreCase));
+  }
+  return buf.searchMatches.get(lineNo);
+}
+
+function getSearchRanges(line, pattern, ignoreCase = false, rangeStart = 0, rangeEnd = line.length) {
   if (!pattern) return [];
   let re;
   try {
@@ -5667,16 +5708,18 @@ function getSearchRanges(line, pattern, ignoreCase = false) {
   }
   const ranges = [];
   if (re) {
+    re.lastIndex = rangeStart;
     let m;
     while ((m = re.exec(line)) !== null) {
+      if (m.index >= rangeEnd) break;
       if (m[0].length === 0) { re.lastIndex++; continue; }
       ranges.push([m.index, m.index + m[0].length]);
     }
   } else {
-    let idx = 0;
-    while (idx < line.length) {
+    let idx = rangeStart;
+    while (idx < rangeEnd) {
       const pos = line.indexOf(pattern, idx);
-      if (pos < 0) break;
+      if (pos < 0 || pos >= rangeEnd) break;
       ranges.push([pos, pos + pattern.length]);
       idx = pos + pattern.length;
     }
