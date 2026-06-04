@@ -2551,8 +2551,8 @@ class App {
     // Reset undo insert chain on any non-printable-char key
     if (!(seq === text && text.length === 1 && text >= " ")) this._undoInsertChain = false;
 
-    // Any key other than tab/backtab clears the autocomplete cycle state
-    if (seq !== "tab" && seq !== "backtab" && buf?.acHas) buf.clearAutocomplete();
+    // Keep autocomplete active while cycling candidates with Tab/Shift-Tab or Up/Down.
+    if (!["tab", "backtab", "up", "down"].includes(seq) && buf?.acHas) buf.clearAutocomplete();
 
     switch (seq) {
       case "escape": {
@@ -2799,10 +2799,18 @@ class App {
         buf.moveRight();
         break;
       case "up":
+        if (buf.acHas) {
+          buf.cycleAutocomplete(false);
+          break;
+        }
         this.pane.selection = null;
         this._moveUpVisual(buf, this.pane);
         break;
       case "down":
+        if (buf.acHas) {
+          buf.cycleAutocomplete(true);
+          break;
+        }
         this.pane.selection = null;
         this._moveDownVisual(buf, this.pane);
         break;

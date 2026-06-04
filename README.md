@@ -40,7 +40,7 @@
 - Almost every component on the screen is clickable or double clickable
 - A complete help is at the end
 ## Auto-completions arrow keys
-- Press Tab and use arrow keys to select items
+- Press Tab and use up/down keys to select auto-complete items
 ## action/js commands
 - A complete help is at the end
 ## Portability

@@ -1,5 +1,8 @@
 # Changelog
 
+## [0.9.10] - 2026-06-04
+- Up/Down key auto-complete selection in editor
+
 ## [0.9.9] - 2026-06-04
 - Added long line protection for softwrap
   * That means binary edits available
