@@ -61,7 +61,9 @@ micro.on("init", () => {
     //micro.TermMessage("Hello from JS plugin! Args: " + args.join(", "));
 
     //await micro.alert(micro.getLine())
-    await micro.alert(bp?.Buf?.Path || "(no path)")
+    const path = bp?.Buf?.Path || "(no path)";
+    const loc = bp?.CursorLocation?.() || "+1.0:1";
+    await micro.alert(`${path}\n${loc}`)
     
   });
   
