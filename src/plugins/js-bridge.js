@@ -51,8 +51,8 @@ function registerBuiltinActions() {
   reg("CursorEnd",             (app) => { app.pane && (app.pane.selection = null); app.buffer?.moveEndOfBuffer();   app.scrollCursorToBoundary?.(app.pane, "end");   });
   reg("ParagraphPrevious",     (app) => { app.pane && (app.pane.selection = null); app.buffer?.paragraphPrevious(); });
   reg("ParagraphNext",         (app) => { app.pane && (app.pane.selection = null); app.buffer?.paragraphNext(); });
-  reg("PageUp",                (app) => { app.pane && (app.pane.selection = null); app.buffer?.page(-1, app.pane?.h ?? 24); });
-  reg("PageDown",              (app) => { app.pane && (app.pane.selection = null); app.buffer?.page(1,  app.pane?.h ?? 24); });
+  reg("PageUp",                (app) => { app.pane && (app.pane.selection = null); app.pageScroll?.(app.pane, -1); });
+  reg("PageDown",              (app) => { app.pane && (app.pane.selection = null); app.pageScroll?.(app.pane, 1); });
 
   // Selection — extend
   reg("SelectUp",              (app) => _actExtendSel(app, (buf) => buf._moveUpVisual?.() ?? buf.moveUp?.()));
@@ -67,8 +67,8 @@ function registerBuiltinActions() {
   reg("SelectToEndOfLine",     (app) => _actExtendSel(app, (buf) => buf.moveEnd?.()));
   reg("SelectToStart",         (app) => _actExtendSel(app, (buf) => buf.moveStartOfBuffer?.()));
   reg("SelectToEnd",           (app) => _actExtendSel(app, (buf) => buf.moveEndOfBuffer?.()));
-  reg("SelectPageUp",          (app) => _actExtendSel(app, (buf) => buf.page?.(-1, app.pane?.h ?? 24)));
-  reg("SelectPageDown",        (app) => _actExtendSel(app, (buf) => buf.page?.(1, app.pane?.h ?? 24)));
+  reg("SelectPageUp",          (app) => app.cursorPage?.(app.pane, -1, { select: true }));
+  reg("SelectPageDown",        (app) => app.cursorPage?.(app.pane, 1, { select: true }));
   reg("SelectToParagraphPrevious", (app) => _actExtendSel(app, (buf) => buf.paragraphPrevious?.()));
   reg("SelectToParagraphNext",     (app) => _actExtendSel(app, (buf) => buf.paragraphNext?.()));
 
@@ -298,10 +298,10 @@ function registerBuiltinActions() {
   reg("End",   (app) => { app.pane && (app.pane.selection = null); app.buffer?._lastVisX != null && (app.buffer._lastVisX = null); app.buffer?.moveEndOfBuffer();   app.scrollCursorToBoundary?.(app.pane, "end");   });
 
   // Page aliases
-  reg("CursorPageUp",    (app) => { app.pane && (app.pane.selection = null); app.buffer?.page?.(-1, app.pane?.h ?? 24); });
-  reg("CursorPageDown",  (app) => { app.pane && (app.pane.selection = null); app.buffer?.page?.(1,  app.pane?.h ?? 24); });
-  reg("HalfPageUp",      (app) => { app.pane && (app.pane.selection = null); app.buffer?.page?.(-1, Math.max(1, Math.floor((app.pane?.h ?? 24) / 2))); });
-  reg("HalfPageDown",    (app) => { app.pane && (app.pane.selection = null); app.buffer?.page?.(1,  Math.max(1, Math.floor((app.pane?.h ?? 24) / 2))); });
+  reg("CursorPageUp",    (app) => app.cursorPage?.(app.pane, -1));
+  reg("CursorPageDown",  (app) => app.cursorPage?.(app.pane, 1));
+  reg("HalfPageUp",      (app) => app.cursorPage?.(app.pane, -1, { amount: Math.max(1, Math.floor((app.pane?.h ?? 24) / 2)) }));
+  reg("HalfPageDown",    (app) => app.cursorPage?.(app.pane, 1, { amount: Math.max(1, Math.floor((app.pane?.h ?? 24) / 2)) }));
 
   // Cursor-to-view-boundary
   reg("CursorToViewTop", (app) => {
@@ -857,6 +857,8 @@ function _makePaneAPI(buffer, app) {
   return {
     get Buf()    { return _makeBufAPI(buffer); },
     get Cursor() { return _makeCursorAPI(buffer); },
+    CursorLocation: () => app?.formatCursorLocation?.(buffer) ?? "+1.0:1",
+    AbsoluteCursorLocation: () => app?.formatAbsoluteCursorLocation?.(buffer) ?? "+1:1",
 
     Save:        async () => app?.save?.(),
     Quit:        async () => app?.quit?.(),
