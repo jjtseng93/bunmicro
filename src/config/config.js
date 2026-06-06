@@ -104,7 +104,9 @@ function normalizeSetting(key, value) {
 
 function validateOption(option, value) {
   if (option === "encoding") {
-    try { new TextDecoder(String(value || "utf-8")); }
+    const encoding = String(value || "utf-8");
+    if (encoding === "hex3") return;
+    try { new TextDecoder(encoding); }
     catch { throw new Error(`Invalid encoding: ${value}`); }
   }
   const choices = OPTION_CHOICES[option];
