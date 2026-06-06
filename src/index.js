@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { Config } from "./config/config.js";
 import { defaultAllSettings, OPTION_CHOICES, LOCAL_SETTINGS } from "./config/defaults.js";
+import { cleanConfig } from "./config/clean.js";
 import { RuntimeRegistry, RTColorscheme, RTHelp } from "./runtime/registry.js";
 import { PluginManager } from "./plugins/manager.js";
 import { JsPluginManager, buildMicroGlobal, runAction, listActions } from "./plugins/js-bridge.js";
@@ -17,8 +18,8 @@ import { Highlighter } from "./highlight/highlighter.js";
 import { DISABLE_MOUSE, parseInputEvents, parseKey } from "./screen/events.js";
 import { Screen } from "./screen/screen.js";
 import { VT100 } from "./screen/vt100.js";
-import { ClipboardManager } from "./platform/clipboard.js";
-import { platformId, run as runCommand, runSync, fetchHttp, fetchHttpBytes, detectHttpBackend } from "./platform/commands.js";
+import { ClipboardManager, probeOSC52, osc52Clipboard } from "./platform/clipboard.js";
+import { platformId, run as runCommand, runSync, fetchHttpBytes, detectHttpBackend } from "./platform/commands.js";
 import { shellSplit } from "./shell/shell.js";
 import { styleToAnsi } from "./display/ansi-style.js";
 import { encodeBinaryToBuffer, decodeBinaryBytes } from "./buffer/fixed3-codec.js";
@@ -92,9 +93,11 @@ const DEFAULT_SETTINGS = {
   savecursor: false,
   softwrap: false,
   wordwrap: false,
+  pageoverlap: 2,
   scrollmargin: 3,
   reload: "prompt",
   encoding: "utf-8",
+  fileformat: process.platform === "win32" ? "dos" : "unix",
   "comment.type": "",
   commenttype: "",
   trailingws: false,
@@ -136,8 +139,7 @@ function isHttpUrl(value) {
   return String(value ?? "").startsWith("http://") || String(value ?? "").startsWith("https://");
 }
 
-async function readTextFileWithEncoding(path, encoding = "utf-8") {
-  const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+function decodeTextBytesWithEncoding(bytes, encoding = "utf-8") {
   if (normalizeEncodingLabel(encoding) === "hex3") {
     return { text: encodeBinaryToBuffer(bytes).toString("latin1"), encoding: "hex3" };
   }
@@ -145,19 +147,35 @@ async function readTextFileWithEncoding(path, encoding = "utf-8") {
   return { text: decoder.decode(bytes), encoding: decoder.encoding };
 }
 
+async function readTextFileWithEncoding(path, encoding = "utf-8") {
+  const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+  return decodeTextBytesWithEncoding(bytes, encoding);
+}
+
 async function fetchTextWithEncoding(url, encoding = "utf-8") {
   const bytes = await fetchHttpBytes(url);
-  if (normalizeEncodingLabel(encoding) === "hex3") {
-    return { text: encodeBinaryToBuffer(new Uint8Array(bytes)).toString("latin1"), encoding: "hex3" };
-  }
-  const decoder = new TextDecoder(normalizeEncodingLabel(encoding));
-  return { text: decoder.decode(bytes), encoding: decoder.encoding };
+  return decodeTextBytesWithEncoding(new Uint8Array(bytes), encoding);
 }
 
 function normalizeEncodingLabel(encoding = "utf-8") {
   const s = String(encoding || "utf-8");
   if (s === "hex3") return "hex3";
   return new TextDecoder(s).encoding;
+}
+
+function detectFileFormat(text, fallback = DEFAULT_SETTINGS.fileformat) {
+  if (text.length === 0) return fallback === "dos" ? "dos" : "unix";
+  const newlineIdx = text.indexOf("\n");
+  if (newlineIdx < 0) return "unix";
+  return newlineIdx > 0 && text.charCodeAt(newlineIdx - 1) === 13 ? "dos" : "unix";
+}
+
+function normalizeBufferText(text) {
+  return String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function encodeBufferTextForFile(text, fileformat) {
+  return fileformat === "dos" ? text.replace(/\n/g, "\r\n") : text;
 }
 
 function isReadonlyBuffer(buf) {
@@ -469,6 +487,7 @@ function parseArgs(argv) {
     help: false,
     clean: false,
     cat: false,
+    docs: false,
     configDir: "",
     debug: false,
     profile: false,
@@ -484,6 +503,7 @@ function parseArgs(argv) {
     else if (arg === "-help" || arg === "--help" || arg === "-h") flags.help = true;
     else if (arg === "-clean") flags.clean = true;
     else if (arg === "--cat" || arg === "-cat" || arg === "--ccat" || arg === "-ccat" || arg === "--bat" || arg === "-bat" || arg === "--glow" || arg === "-glow") flags.cat = true;
+    else if (arg === "--docs" || arg === "--readme") flags.docs = true;
     else if (arg === "-debug") flags.debug = true;
     else if (arg === "-profile") flags.profile = true;
     else if (arg === "-config-dir") flags.configDir = argv[++i] ?? "";
@@ -500,17 +520,13 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    `Usage: ${pkg.name} [OPTION]... [FILE]...`,
+    `Usage: 
+  ${pkg.name} [OPTIONs] [FILEs] [+line[.subrow][:col]]\n`,
     "-clean",
-    "    Clean configuration directory and exit (not implemented in Bun port)",
+    "    Clean configuration directory and exit",
     "-config-dir dir",
     "    Specify a custom location for configuration directory",
-    "-debug",
-    "    Enable debug logging",
-    "-help, --help, -h",
-    "    Show this help and exit",
-    "-options",
-    "    Show option help and exit",
+    "",
     "-plugin list",
     "    List installed plugins",
     "-plugin available|avail",
@@ -523,20 +539,28 @@ function usage() {
     "    Remove installed plugin(s)",
     "-plugin update [name]...",
     "    Update installed plugin(s) (all if no name given)",
-
-    "-version, -V",
-    "    Show version number and information and exit",
-    "--cat, --ccat, --bat, --glow",
-    "    Syntax-highlight file(s) and write to stdout, then exit (.md uses Bun.markdown.ansi)",
+    "",
     "-<option> value",
     "    Set an option for this session",
+    "-options",
+    "    Show option help and exit\n",
+    "--cat, --ccat, --bat, --glow",
+    "    Syntax-highlight file(s) and write to stdout, then exit (.md uses Bun.markdown.ansi)\n",
+    "-help, -h, --help",
+    "    Show this help & exit",
+    "-version, -V, --version",
+    "    Show version+backend info & exit",
+    "--docs, --readme",
+    `    Show ${pkg.name}'s README.md & exit`,
+
+
   ].join("\n");
 }
 
 function parseInput(args) {
   const files = [];
   const command = {
-    startCursor: { x: -1, y: -1 },
+    startCursor: { line: -1, subRow: 0, col: 1 },
     searchRegex: "",
     searchAfterStart: false,
   };
@@ -545,25 +569,19 @@ function parseInput(args) {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    const pos = arg.match(/^\+(\d+)(?::(\d+))?$/);
+    const pos = arg.match(/^\+(-?\d+(?:\.\d+)?)(?::(-?\d+))?$/);
     const search = arg.match(/^\+\/(.+)$/);
-    const cursorFile = arg.match(/^(.+):(\d+)(?::(\d+))$/);
+    const cursorFile = arg.match(/^(.+):(-?\d+(?:\.\d+)?)(?::(-?\d+))?$/);
 
     if (pos) {
-      command.startCursor = {
-        x: pos[2] ? Number(pos[2]) - 1 : 0,
-        y: Number(pos[1]) - 1,
-      };
+      command.startCursor = parseLineCol(`${pos[1]}${pos[2] ? `:${pos[2]}` : ""}`);
       posIndex = i;
     } else if (search) {
       command.searchRegex = search[1];
       searchIndex = i;
     } else if (DEFAULT_SETTINGS.parsecursor && cursorFile && existsSync(cursorFile[1])) {
       files.push(cursorFile[1]);
-      command.startCursor = {
-        x: cursorFile[3] ? Number(cursorFile[3]) - 1 : 0,
-        y: Number(cursorFile[2]) - 1,
-      };
+      command.startCursor = parseLineCol(`${cursorFile[2]}${cursorFile[3] ? `:${cursorFile[3]}` : ""}`);
       posIndex = i;
     } else {
       files.push(arg);
@@ -582,9 +600,9 @@ class BufferModel {
     this.path = path;
     this.type = type;
     this.name = path ? basename(path) : "No name";
-    this.fileformat = text.includes("\r\n") ? "dos" : "unix";
+    this.fileformat = detectFileFormat(text, DEFAULT_SETTINGS.fileformat);
     this.encoding = normalizeEncodingLabel(encoding);
-    this.lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    this.lines = normalizeBufferText(text).split("\n");
     if (this.lines.length === 0) this.lines = [""];
     this.cursor = { x: 0, y: 0 };
     this.scroll = { x: 0, y: 0, row: 0 };
@@ -623,8 +641,11 @@ class BufferModel {
       savecursor: DEFAULT_SETTINGS.savecursor,
       softwrap: DEFAULT_SETTINGS.softwrap,
       wordwrap: DEFAULT_SETTINGS.wordwrap,
+      pageoverlap: DEFAULT_SETTINGS.pageoverlap,
       scrollmargin: DEFAULT_SETTINGS.scrollmargin,
       reload: DEFAULT_SETTINGS.reload,
+      eofnewline: DEFAULT_SETTINGS.eofnewline,
+      fileformat: this.fileformat,
       trailingws: DEFAULT_SETTINGS.trailingws,
       encoding: this.encoding,
       readonly,
@@ -633,9 +654,13 @@ class BufferModel {
     this.AbsPath = path;
     this.Type = { Scratch: type !== "default", Kind: 0, Readonly: readonly };
 
-    if (command.startCursor && command.startCursor.y >= 0) {
-      this.cursor.y = clamp(command.startCursor.y, 0, this.lines.length - 1);
-      this.cursor.x = clamp(command.startCursor.x, 0, this.lines[this.cursor.y].length);
+    if (commandHasStartCursor(command)) {
+      if (command.startCursor.subRow > 0) {
+        this.gotoLoc(command.startCursor.line, 1);
+        this._pendingVisualGoto = { subRow: command.startCursor.subRow, col: command.startCursor.col };
+      } else {
+        this.gotoLoc(command.startCursor.line, command.startCursor.col);
+      }
     }
     if (command.searchRegex) this.search(command.searchRegex, command.searchAfterStart);
   }
@@ -897,8 +922,8 @@ class BufferModel {
     return true;
   }
 
-  page(delta, height) {
-    this.cursor.y += delta * Math.max(1, height - 2);
+  page(delta, amount) {
+    this.cursor.y += delta * Math.max(1, amount);
     this.ensureCursor();
   }
 
@@ -1019,8 +1044,9 @@ class BufferModel {
       const text = decoded.text;
       this.encoding = decoded.encoding;
       this.Settings.encoding = decoded.encoding;
-      this.fileformat = text.includes("\r\n") ? "dos" : "unix";
-      this.lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+      this.fileformat = detectFileFormat(text, this.Settings.fileformat ?? DEFAULT_SETTINGS.fileformat);
+      this.Settings.fileformat = this.fileformat;
+      this.lines = normalizeBufferText(text).split("\n");
       if (this.lines.length === 0) this.lines = [""];
       this.modTimeMs = null;
       this.readonly = false;
@@ -1044,8 +1070,9 @@ class BufferModel {
     const text = decoded.text;
     this.encoding = decoded.encoding;
     this.Settings.encoding = decoded.encoding;
-    this.fileformat = text.includes("\r\n") ? "dos" : "unix";
-    this.lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+    this.fileformat = detectFileFormat(text, this.Settings.fileformat ?? DEFAULT_SETTINGS.fileformat);
+    this.Settings.fileformat = this.fileformat;
+    this.lines = normalizeBufferText(text).split("\n");
     if (this.lines.length === 0) this.lines = [""];
     this.modTimeMs = info.mtimeMs;
     this.readonly = !canWritePath(this.path);
@@ -1080,8 +1107,8 @@ class BufferModel {
       this.message = `Saved ${path}`;
       return;
     }
-    if (DEFAULT_SETTINGS.eofnewline && !text.endsWith("\n")) text += "\n";
-    await Bun.write(path, text);
+    if ((this.Settings.eofnewline ?? DEFAULT_SETTINGS.eofnewline) && !text.endsWith("\n")) text += "\n";
+    await Bun.write(path, encodeBufferTextForFile(text, this.Settings.fileformat ?? this.fileformat));
     this.encoding = "utf-8";
     this.Settings.encoding = "utf-8";
     this.path = path;
@@ -1222,19 +1249,27 @@ class BufferModel {
   SetOption(option, value) {
     const oldValue = this.Settings[option];
     const parsed = parseOptionValue(value);
-    this.Settings[option] = option === "encoding" ? normalizeEncodingLabel(parsed) : parsed;
+    if (option === "fileformat" && !OPTION_CHOICES.fileformat.includes(String(parsed))) {
+      throw new Error(`Invalid value for fileformat: ${parsed}`);
+    }
+    this.Settings[option] = option === "encoding" ? normalizeEncodingLabel(parsed) : option === "fileformat" ? String(parsed) : parsed;
     if (option === "filetype") this.filetype = String(parsed);
     if (option === "encoding") this.encoding = this.Settings.encoding;
+    if (option === "fileformat") this.fileformat = this.Settings.fileformat === "dos" ? "dos" : "unix";
     if (option === "readonly") { this.readonly = Boolean(parsed); this.Type.Readonly = this.readonly; }
-    if (option in DEFAULT_SETTINGS) DEFAULT_SETTINGS[option] = this.Settings[option];
+    if (option in DEFAULT_SETTINGS && option !== "fileformat") DEFAULT_SETTINGS[option] = this.Settings[option];
     this._onOptionChange?.(option, oldValue, this.Settings[option]);
   }
 
   DoSetOptionNative(option, value) {
     const oldValue = this.Settings[option];
-    this.Settings[option] = option === "encoding" ? normalizeEncodingLabel(value) : value;
+    if (option === "fileformat" && !OPTION_CHOICES.fileformat.includes(String(value))) {
+      throw new Error(`Invalid value for fileformat: ${value}`);
+    }
+    this.Settings[option] = option === "encoding" ? normalizeEncodingLabel(value) : option === "fileformat" ? String(value) : value;
     if (option === "filetype") this.filetype = String(value);
     if (option === "encoding") this.encoding = this.Settings.encoding;
+    if (option === "fileformat") this.fileformat = this.Settings.fileformat === "dos" ? "dos" : "unix";
     if (option === "readonly") { this.readonly = Boolean(value); this.Type.Readonly = this.readonly; }
     this._onOptionChange?.(option, oldValue, this.Settings[option]);
   }
@@ -1263,7 +1298,7 @@ class BufferModel {
   }
 
   Bytes() {
-    return this.lines.join("\n");
+    return encodeBufferTextForFile(this.lines.join("\n"), this.Settings.fileformat ?? this.fileformat);
   }
 
   Size() {
@@ -1636,6 +1671,10 @@ class App {
     this._acHScroll = 0;
     this._suppressMouseUntilUp = false;
     this._undoInsertChain = false;
+    this._freshClip = false;
+    this._messageClickAction = null;
+    this._messageRowY = null;
+    this._messageRowClickZone = null;
   }
 
   get tab()    { return this.tabs[this.activeTabIdx]; }
@@ -1644,6 +1683,22 @@ class App {
   // backward-compat for the few spots that still use this.active / this.buffers
   get active() { return this.activeTabIdx; }
   get buffers() { return this.tabs.map(t => t.buffer).filter(Boolean); }
+
+  paneForBuffer(buffer) {
+    for (const tab of this.tabs) {
+      const pane = tab.panes().find((p) => p.buffer === buffer);
+      if (pane) return pane;
+    }
+    return null;
+  }
+
+  formatCursorLocation(buffer = this.buffer, pane = null) {
+    return formatCursorLocation(buffer, pane ?? this.paneForBuffer(buffer) ?? this.pane);
+  }
+
+  formatAbsoluteCursorLocation(buffer = this.buffer) {
+    return formatAbsoluteCursorLocation(buffer);
+  }
 
   async start() {
     this._started = true;
@@ -1666,7 +1721,10 @@ class App {
     _activeTtyStream = this._ttyStream;
     this._ttyStream.setRawMode?.(true);
     this._ttyStream.resume();
-    this._ttyStream.on("data", (data) => this.handleInput(data));
+    const clipSetting = this.context?.config?.getGlobalOption("clipboard") ?? "external";
+    await this.reinitializeClipboard(clipSetting);
+    this._inputHandler = (data) => this.handleInput(data);
+    this._ttyStream.on("data", this._inputHandler);
     process.stdout.on("resize", () => {
       const resize = this.screen.updateSize();
       this.rows = resize.rows;
@@ -1684,6 +1742,15 @@ class App {
       this.render();
     } finally {
       startupHighlightProgress = null;
+    }
+  }
+
+  async reinitializeClipboard(setting) {
+    if (this._inputHandler) this._ttyStream?.removeListener("data", this._inputHandler);
+    try {
+      await this.clipboard.initFromSetting(setting, this._ttyStream, process.stdout, 150);
+    } finally {
+      if (this._inputHandler) this._ttyStream?.on("data", this._inputHandler);
     }
   }
 
@@ -1912,7 +1979,23 @@ class App {
     const statusStyle = this.context.colorscheme?.get("statusline") ?? { ...defaultStyle, reverse: true };
     const style = { ...statusStyle, reverse: false };
     putText(this.screen, 0, row, " ".repeat(this.cols), style, this.cols);
-    putText(this.screen, 0, row, String(message).slice(0, this.cols), style, this.cols);
+    this._messageRowY = row;
+    this._messageRowClickZone = null;
+    const msg = String(message);
+    // detect [AltMethod] prefix — render it underlined as a clickable button
+    if (this._messageClickAction && msg.startsWith("[")) {
+      const close = msg.indexOf("]");
+      if (close > 0) {
+        const btnText = msg.slice(0, close + 1);
+        const rest = msg.slice(close + 1);
+        const btnStyle = { ...style, underline: true };
+        let sx = putText(this.screen, 0, row, btnText, btnStyle, this.cols);
+        putText(this.screen, sx, row, rest.slice(0, this.cols - sx), style, this.cols - sx);
+        this._messageRowClickZone = { start: 0, end: sx };
+        return;
+      }
+    }
+    putText(this.screen, 0, row, msg.slice(0, this.cols), style, this.cols);
   }
 
   renderKeyMenu(defaultStyle, statusRow) {
@@ -2008,9 +2091,46 @@ class App {
     return -1;
   }
 
+  gotoLocation(buf, loc, pane = this.pane) {
+    if (!buf) return;
+    if (!loc?.subRow) {
+      buf.gotoLoc(loc.line, loc.col);
+      return;
+    }
+    buf.gotoLoc(loc.line, 1);
+    this.applyVisualGoto(buf, pane, loc.subRow, loc.col);
+  }
+
+  applyVisualGoto(buf, pane, subRow, col = 1) {
+    if (!buf || !pane) return;
+    const softwrap = buf.Settings?.softwrap ?? false;
+    if (!softwrap) {
+      buf.gotoLoc(buf.cursor.y + 1, col);
+      return;
+    }
+    const gutterW = editorGutterWidth(buf);
+    const bufW = Math.max(1, pane.w - gutterW);
+    const wordwrap = buf.Settings?.wordwrap ?? false;
+    const tabsize = buf.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
+    const line = buf.lines[buf.cursor.y] ?? "";
+    const breaks = softwrapBreaks(line, bufW, wordwrap, tabsize);
+    const targetSubRow = clamp(Math.trunc(Number(subRow) || 0), 0, Math.max(0, breaks.length - 1));
+    const segStart = breaks[targetSubRow] ?? 0;
+    buf.cursor.x = visualColToCharIdx(line, segStart, Math.max(0, Math.trunc(Number(col) || 1) - 1));
+    buf.ensureCursor();
+  }
+
+  applyPendingVisualGoto(pane) {
+    const pending = pane?.buffer?._pendingVisualGoto;
+    if (!pending) return;
+    delete pane.buffer._pendingVisualGoto;
+    this.applyVisualGoto(pane.buffer, pane, pending.subRow, pending.col);
+  }
+
   renderEditorPane(pane, defaultStyle) {
     const buf = pane.buffer;
     if (!buf) return;
+    this.applyPendingVisualGoto(pane);
     this.updateScrollForPane(pane);
     const gutterW = editorGutterWidth(buf);
     const braceMatches = findMatchingBracePositions(buf);
@@ -2066,7 +2186,7 @@ class App {
       if (lineNumW > 0) {
         const prefix = subRow === 0
           ? lineNumberText(buf, lineNo, row, lineNumW)
-          : " ".repeat(lineNumW);
+          : visualLineNumberText(subRow, lineNumW);
         putText(this.screen, pane.x + msgW + diffCol, screenRow, prefix, isDirtyLongLine(buf, lineNo) ? dirtyGutterStyle : gutterStyle, lineNumW);
       }
     };
@@ -2287,6 +2407,86 @@ class App {
       buf.scroll.x = charIdxForScrollRight(buf.lines[buf.cursor.y] ?? "", buf.cursor.x, bufW);
     }
   }
+
+  pageScroll(pane, delta, amount = null) {
+    const buf = pane?.buffer;
+    if (!buf) return;
+    const gutterW = editorGutterWidth(buf);
+    const bufW = Math.max(1, (pane?.w ?? this.cols) - gutterW);
+    const softwrap = buf.Settings?.softwrap ?? false;
+    const wordwrap = softwrap && (buf.Settings?.wordwrap ?? false);
+    const tabsize = buf.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
+    const pageOverlap = Math.trunc(Number(buf.Settings?.pageoverlap ?? DEFAULT_SETTINGS.pageoverlap) || 0);
+    const scrollAmount = amount ?? Math.max(1, (pane?.h ?? this.rows) - pageOverlap);
+
+    if (softwrap) {
+      const start = { line: buf.scroll.y, row: buf.scroll.row ?? 0 };
+      const next = delta < 0
+        ? slocRetreatN(buf.lines, start, scrollAmount, bufW, wordwrap, tabsize)
+        : slocAdvanceN(buf.lines, start, scrollAmount, bufW, wordwrap, tabsize);
+      buf.scroll.y = next.line;
+      buf.scroll.row = next.row;
+      buf.scroll.x = 0;
+      if (delta > 0) this.scrollAdjust(pane);
+    } else {
+      buf.scroll.y = Math.max(0, (buf.scroll.y ?? 0) + delta * scrollAmount);
+      buf.scroll.row = 0;
+      if (delta > 0) this.scrollAdjust(pane);
+    }
+    buf.allowCursorOffscreen = true;
+  }
+
+  scrollAdjust(pane) {
+    const buf = pane?.buffer;
+    if (!buf || buf.lines.length === 0) return;
+    const gutterW = editorGutterWidth(buf);
+    const bufW = Math.max(1, (pane?.w ?? this.cols) - gutterW);
+    const softwrap = buf.Settings?.softwrap ?? false;
+    const wordwrap = softwrap && (buf.Settings?.wordwrap ?? false);
+    const tabsize = buf.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
+    if (softwrap) {
+      const endLine = Math.max(0, buf.lines.length - 1);
+      const endBreaks = softwrapBreaks(buf.lines[endLine] ?? "", bufW, wordwrap, tabsize);
+      const end = { line: endLine, row: Math.max(0, endBreaks.length - 1) };
+      const start = { line: buf.scroll.y, row: buf.scroll.row ?? 0 };
+      if (slocDiff(buf.lines, start, end, bufW, wordwrap, tabsize) < (pane?.h ?? this.rows) - 1) {
+        const adjusted = slocRetreatN(buf.lines, end, Math.max(0, (pane?.h ?? this.rows) - 1), bufW, wordwrap, tabsize);
+        buf.scroll.y = adjusted.line;
+        buf.scroll.row = adjusted.row;
+      }
+    } else {
+      buf.scroll.y = Math.min(buf.scroll.y ?? 0, Math.max(0, buf.lines.length - (pane?.h ?? this.rows)));
+    }
+  }
+
+  cursorPage(pane, delta, { select = false, amount = null } = {}) {
+    const buf = pane?.buffer;
+    if (!buf) return;
+    const pageOverlap = Math.trunc(Number(buf.Settings?.pageoverlap ?? DEFAULT_SETTINGS.pageoverlap) || 0);
+    const selectionEndNewline = !select && delta > 0 && pane.selection?.end?.x === 0;
+    let scrollAmount = amount ?? Math.max(1, (pane?.h ?? this.rows) - pageOverlap);
+    if (selectionEndNewline) scrollAmount = Math.max(1, scrollAmount - 1);
+    const move = () => {
+      const softwrap = buf.Settings?.softwrap ?? false;
+      if (softwrap) {
+        for (let i = 0; i < scrollAmount; i++) {
+          if (delta < 0) this._moveUpVisual(buf, pane);
+          else this._moveDownVisual(buf, pane);
+        }
+      } else {
+        buf.page(delta, scrollAmount);
+      }
+    };
+    if (select) extendSelection(pane, buf, move);
+    else {
+      pane.selection = null;
+      move();
+    }
+    if (selectionEndNewline) buf.moveHome();
+    this.pageScroll(pane, delta, scrollAmount);
+    buf.allowCursorOffscreen = false;
+  }
+
   // Softwrap-aware vertical cursor movement.
   // Moves cursor by one visual row, maintaining the target visual X column.
   _softwrapGetContext(buf, pane) {
@@ -2394,6 +2594,12 @@ class App {
 
   async _dispatchInput(data) {
     const text = decoder.decode(data);
+
+    // Any non-mouse input clears the clipboard alt-copy action
+    {
+      const _evts = parseInputEvents(data);
+      if (_evts.some(e => e.type !== "mouse")) this._messageClickAction = null;
+    }
 
     // Any non-mouse input stops TTS
     if (this._ttsState) {
@@ -2504,12 +2710,14 @@ class App {
         else if (event.type === "paste") await this.handlePrompt(event.text);
         else await this.handleEvent(event);
       }
+      this._syncPrimarySelection();
       return;
     }
 
     for (const event of parseInputEvents(data)) {
       await this.handleEvent(event);
     }
+    this._syncPrimarySelection();
   }
 
   async handleEvent(event) {
@@ -2575,40 +2783,9 @@ class App {
         };
         buf.cursor = { ...this.pane.selection.end };
         break;
-      case "ctrl-c": { //copy
-        const sel = this.pane?.selection;
-        if (sel) {
-          const text = getSelectionText(buf, sel);
-          this.clipboard.write(text);
-          this.message = `Copied to ${this.clipboard.methodName()} clipboard`;
-        } else {
-          this.clipboard.write(buf.currentLineText() + "\n");
-          this.message = `Copied line to ${this.clipboard.methodName()} clipboard`;
-        }
-        break;
-      }
-      case "ctrl-x": { //cut
-        buf.pushUndo();
-        if (this.pane?.selection) {
-          const text = deleteSelection(buf, this.pane);
-          this.clipboard.write(text);
-          this.message = `Cut to ${this.clipboard.methodName()} clipboard`;
-        } else {
-          this.clipboard.write(buf.cutLine() + "\n");
-          this.message = `Cut line to ${this.clipboard.methodName()} clipboard`;
-        }
-        break;
-      }
-      case "ctrl-v": { //paste
-        const pasted = this.clipboard.read();
-        if (pasted) {
-          buf.pushUndo();
-          if (this.pane?.selection) deleteSelection(buf, this.pane);
-          buf.insert(pasted);
-          this.message = pasteStatusMessage(this.clipboard.methodName(), pasted);
-        }
-        break;
-      }
+      case "ctrl-c": await this.handleCommand("copy"); break; //copy
+      case "ctrl-x": await this.handleCommand("cut"); break; //cut
+      case "ctrl-v": await this.handleCommand("paste"); break; //paste
       case "ctrl-z": //undo
         if (buf.undo()) this.pane.selection = null;
         else this.message = "Nothing to undo";
@@ -2722,17 +2899,7 @@ class App {
         }
         break;
       }
-      case "ctrl-k": //cutLine
-        buf.pushUndo();
-        if (this.pane?.selection) {
-          const text = deleteSelection(buf, this.pane);
-          this.clipboard.write(text);
-          this.message = `Cut to ${this.clipboard.methodName()} clipboard`;
-        } else {
-          this.clipboard.write(buf.cutLine() + "\n");
-          this.message = `Cut line to ${this.clipboard.methodName()} clipboard`;
-        }
-        break;
+      case "ctrl-k": await this.handleCommand("cutline"); break; //cutLine
       case "ctrl-o": //open
         this.openCommandMode("open ");
         break;
@@ -2840,11 +3007,11 @@ class App {
         break;
       case "shift-pageup":
         buf._lastVisX = null;
-        extendSelection(this.pane, buf, () => buf.page(-1, this.rows));
+        this.cursorPage(this.pane, -1, { select: true });
         break;
       case "shift-pagedown":
         buf._lastVisX = null;
-        extendSelection(this.pane, buf, () => buf.page(1, this.rows));
+        this.cursorPage(this.pane, 1, { select: true });
         break;
       case "home":
         buf._lastVisX = null;
@@ -2912,11 +3079,11 @@ class App {
         break;
       case "pageup":
         buf._lastVisX = null;
-        await runAction("PageUp", this);
+        await runAction("CursorPageUp", this);
         break;
       case "pagedown":
         buf._lastVisX = null;
-        await runAction("PageDown", this);
+        await runAction("CursorPageDown", this);
         break;
       case "tab":
         if (buf.acHas) buf.cycleAutocomplete(true);
@@ -2988,14 +3155,14 @@ class App {
       }
       if (ch < " " && ch !== "\t") continue;
       buf.insertChar(ch);
-      await this.context.plugins?.run("onRune", makePaneAdapter(buf), ch);
-      await this.context.jsPlugins?.run("onRune", makePaneAdapter(buf), ch);
+      await this.context.plugins?.run("onRune", makePaneAdapter(buf, this), ch);
+      await this.context.jsPlugins?.run("onRune", makePaneAdapter(buf, this), ch);
     }
   }
 
   async runPluginBool(fn) {
-    const luaOk = await this.context.plugins?.runBool(fn, makePaneAdapter(this.buffer)) ?? true;
-    const jsOk  = await this.context.jsPlugins?.runBool(fn, makePaneAdapter(this.buffer)) ?? true;
+    const luaOk = await this.context.plugins?.runBool(fn, makePaneAdapter(this.buffer, this)) ?? true;
+    const jsOk  = await this.context.jsPlugins?.runBool(fn, makePaneAdapter(this.buffer, this)) ?? true;
     return luaOk && jsOk;
   }
 
@@ -3007,6 +3174,10 @@ class App {
     }
 
     if (this.handleSuggestionMouse(event)) {
+      this.render();
+      return;
+    }
+    if (await this.handleMessageRowMouse(event)) {
       this.render();
       return;
     }
@@ -3060,7 +3231,7 @@ class App {
       }
       return;
     }
-    if (!["down", "up", "drag"].includes(event.action) || !["left", "none"].includes(event.button)) return;
+    if (!["down", "up", "drag"].includes(event.action) || !["left", "none", "middle"].includes(event.button)) return;
     buf.allowCursorOffscreen = false;
     const gutterW = _swGutterW;
     const localY = event.y - clicked.y;
@@ -3081,6 +3252,18 @@ class App {
     }
     buf.cursor.y = y;
     buf.cursor.x = x;
+    if (event.button === "middle") {
+      if (event.action === "down") {
+        const pasted = this.clipboard.read("primary");
+        if (pasted) {
+          buf.pushUndo();
+          this.pane.selection = null;
+          buf.insert(pasted);
+          this.message = pasteStatusMessage("primary", pasted);
+        }
+      }
+      return;
+    }
     if (event.action === "down") {
       if (inGutter) {
         // Message column (first msgW cols): show message text in infobar, no selection.
@@ -3162,6 +3345,15 @@ class App {
     buf.ensureCursor();
   }
 
+  _syncPrimarySelection() {
+    const sel = this.pane?.selection;
+    if (!sel || sameLoc(sel.start, sel.end)) return;
+    const buf = this.buffer;
+    if (!buf) return;
+    const text = getSelectionText(buf, sel);
+    if (text) this.clipboard.write(text, "primary");
+  }
+
   handleSuggestionMouse(event) {
     if (this._suggestionsRow == null || event.y !== this._suggestionsRow) return false;
     if (event.action !== "down" || event.button !== "left") return false;
@@ -3178,6 +3370,19 @@ class App {
       this.prompt.cursor = this.prompt.value.length;
       this.prompt.onDelta?.(this.prompt.value);
     }
+    return true;
+  }
+
+  async handleMessageRowMouse(event) {
+    if (this._messageRowY == null || event.y !== this._messageRowY) return false;
+    if (event.action !== "down" || event.button !== "left") return false;
+    const zone = this._messageRowClickZone;
+    if (!zone || !this._messageClickAction) return false;
+    if (event.x < zone.start || event.x >= zone.end) return false;
+    const result = this._messageClickAction();
+    this._messageClickAction = null;
+    this._messageRowClickZone = null;
+    if (typeof result === "string") this.message = result;
     return true;
   }
 
@@ -3238,7 +3443,11 @@ class App {
         break;
       }
       case "fmt":
-        if (buf) { buf.fileformat = buf.fileformat === "dos" ? "unix" : "dos"; buf.modified = true; }
+        if (buf) {
+          buf.fileformat = buf.fileformat === "dos" ? "unix" : "dos";
+          buf.Settings.fileformat = buf.fileformat;
+          buf.modified = true;
+        }
         break;
       case "enc":
         if (buf) {
@@ -3298,9 +3507,9 @@ class App {
     if (index < 0 || index >= this.tabs.length || index === this.activeTabIdx) return false;
     this.activeTabIdx = index;
     this.message = "";
-    if (this.context.plugins && this.buffer) this.context.plugins.curPaneAdapter = makePaneAdapter(this.buffer);
-    this.context.plugins?.run("onSetActive", makePaneAdapter(this.buffer));
-    if (this.buffer) this.context.jsPlugins?.run("onSetActive", makePaneAdapter(this.buffer));
+    if (this.context.plugins && this.buffer) this.context.plugins.curPaneAdapter = makePaneAdapter(this.buffer, this);
+    this.context.plugins?.run("onSetActive", makePaneAdapter(this.buffer, this));
+    if (this.buffer) this.context.jsPlugins?.run("onSetActive", makePaneAdapter(this.buffer, this));
     return true;
   }
 
@@ -3551,14 +3760,14 @@ class App {
         this.openPrompt("Save as: ", async (value) => {
           if (value) {
             await this.buffer.save(resolve(expandHome(value)));
-            await this.context.plugins?.run("onSave", makePaneAdapter(this.buffer));
-            await this.context.jsPlugins?.run("onSave", makePaneAdapter(this.buffer));
+            await this.context.plugins?.run("onSave", makePaneAdapter(this.buffer, this));
+            await this.context.jsPlugins?.run("onSave", makePaneAdapter(this.buffer, this));
           }
         }, { completer: fileComplete, initial });
       } else {
         await this.buffer.save();
-        await this.context.plugins?.run("onSave", makePaneAdapter(this.buffer));
-        await this.context.jsPlugins?.run("onSave", makePaneAdapter(this.buffer));
+        await this.context.plugins?.run("onSave", makePaneAdapter(this.buffer, this));
+        await this.context.jsPlugins?.run("onSave", makePaneAdapter(this.buffer, this));
         await this._saveCursorForBuf(this.buffer);
       }
     } catch (error) {
@@ -3715,10 +3924,10 @@ class App {
     this.tabs.splice(this.activeTabIdx, 1);
     this.activeTabIdx = Math.min(this.activeTabIdx, this.tabs.length - 1);
     this.message = "";
-    if (this.context.plugins && this.buffer) this.context.plugins.curPaneAdapter = makePaneAdapter(this.buffer);
-    await this.context.plugins?.run("onSetActive", makePaneAdapter(this.buffer));
+    if (this.context.plugins && this.buffer) this.context.plugins.curPaneAdapter = makePaneAdapter(this.buffer, this);
+    await this.context.plugins?.run("onSetActive", makePaneAdapter(this.buffer, this));
     await this.context.plugins?.run("onBufferClose", closing);
-    if (this.buffer) this.context.jsPlugins?.run("onSetActive", makePaneAdapter(this.buffer));
+    if (this.buffer) this.context.jsPlugins?.run("onSetActive", makePaneAdapter(this.buffer, this));
     await this.context.jsPlugins?.run("onBufferClose", closing);
     this.render();
   }
@@ -3891,6 +4100,9 @@ class App {
               this.message = `colorscheme: ${err.message}`;
             }
           }
+          if (opt === "clipboard") {
+            await this.reinitializeClipboard(buf.Settings[opt]);
+          }
         }
         break;
       }
@@ -3937,8 +4149,8 @@ class App {
             if (answer === "y") {
               try {
                 await buf.save(target);
-                await this.context.plugins?.run("onSave", makePaneAdapter(buf));
-                await this.context.jsPlugins?.run("onSave", makePaneAdapter(buf));
+                await this.context.plugins?.run("onSave", makePaneAdapter(buf, this));
+                await this.context.jsPlugins?.run("onSave", makePaneAdapter(buf, this));
               } catch (err) {
                 this.message = err.message;
               }
@@ -3948,8 +4160,8 @@ class App {
         } else if (saveArgs.length > 0) {
           try {
             await buf.save(resolve(expandHome(saveArgs[0])));
-            await this.context.plugins?.run("onSave", makePaneAdapter(buf));
-            await this.context.jsPlugins?.run("onSave", makePaneAdapter(buf));
+            await this.context.plugins?.run("onSave", makePaneAdapter(buf, this));
+            await this.context.jsPlugins?.run("onSave", makePaneAdapter(buf, this));
           }
           catch (err) { this.message = err.message; }
         } else {
@@ -4006,10 +4218,9 @@ class App {
         this.toggleComment();
         break;
       case "goto": {
-        if (cmdArgs.length === 0) { this.message = "Usage: goto <line[:col]>"; break; }
+        if (cmdArgs.length === 0) { this.message = "Usage: goto <line[.subrow][:col]>"; break; }
         try {
-          const { line, col } = parseLineCol(cmdArgs[0]);
-          buf.gotoLoc(line, col);
+          this.gotoLocation(buf, parseLineCol(cmdArgs[0]), this.pane);
           this.pane.selection = null;
         } catch (error) {
           this.message = String(error.message || error);
@@ -4203,7 +4414,7 @@ class App {
           await this.context.plugins?.run("onBufferOpen", buf);
           await this.context.jsPlugins?.run("onBufferOpen", buf);
         }
-        if (cmd !== "togglelocal" && cfg && opt in cfg.globalSettings) {
+        if (cmd !== "togglelocal" && cfg && opt in cfg.globalSettings && !LOCAL_SETTINGS.has(opt)) {
           try { cfg.setGlobalOptionNative(opt, newVal, { modified: true }); await cfg.saveSettings(); } catch {}
         }
         break;
@@ -4217,12 +4428,13 @@ class App {
         const defVal = opt in defaults ? defaults[opt] : true;
         try { buf.SetOption(opt, String(defVal)); } catch (err) { this.message = String(err.message || err); break; }
         this.message = `${opt} = ${defVal}`;
-        if (cfgR && opt in cfgR.globalSettings) {
+        if (cfgR && opt in cfgR.globalSettings && !LOCAL_SETTINGS.has(opt)) {
           try { cfgR.setGlobalOptionNative(opt, defVal, { modified: true }); await cfgR.saveSettings(); } catch {}
         }
         if (opt === "colorscheme" && this.context?.runtime) {
           try { this.context.colorscheme = await new Colorscheme(this.context.runtime).load(String(defVal)); } catch {}
         }
+        if (opt === "clipboard") await this.reinitializeClipboard(defVal);
         break;
       }
       case "jump": {
@@ -4371,11 +4583,66 @@ class App {
         await this.runAlert(content);
         break;
       }
+      case "copy": {
+        this._freshClip = false;
+        const sel = this.pane?.selection;
+        const copyText = sel ? getSelectionText(buf, sel) : (buf.currentLineText() + "\n");
+        this.clipboard.write(copyText);
+        this.message = clipboardCopyMsg(this.clipboard, copyText, sel ? "selection" : "line");
+        this._messageClickAction = clipboardAltAction(this.clipboard, copyText);
+        break;
+      }
+      case "cut": {
+        this._freshClip = false;
+        buf.pushUndo();
+        const cutText = this.pane?.selection
+          ? deleteSelection(buf, this.pane)
+          : (buf.cutLine() + "\n");
+        const cutKind = this.pane?.selection ? "selection" : "line";
+        this.clipboard.write(cutText);
+        this.message = clipboardCopyMsg(this.clipboard, cutText, cutKind, "Cut");
+        this._messageClickAction = clipboardAltAction(this.clipboard, cutText);
+        break;
+      }
+      case "cutline": {
+        buf.pushUndo();
+        if (this.pane?.selection) {
+          this._freshClip = false;
+          const text = deleteSelection(buf, this.pane);
+          this.clipboard.write(text);
+          this.message = clipboardCopyMsg(this.clipboard, text, "selection", "Cut");
+          this._messageClickAction = clipboardAltAction(this.clipboard, text);
+        } else {
+          const prev = this._freshClip ? (this.clipboard.read() ?? "") : "";
+          const line = buf.cutLine() + "\n";
+          this.clipboard.write(prev + line);
+          this._freshClip = true;
+          const total = (prev + line).split("\n").length - 1;
+          const label = total > 1 ? `${total} lines` : "line";
+          this.message = clipboardCopyMsg(this.clipboard, prev + line, label, "Cut");
+          this._messageClickAction = clipboardAltAction(this.clipboard, prev + line);
+        }
+        break;
+      }
+      case "paste": {
+        this._freshClip = false;
+        const pasted = this.clipboard.read();
+        if (pasted) {
+          buf.pushUndo();
+          if (this.pane?.selection) deleteSelection(buf, this.pane);
+          buf.insert(pasted);
+          this.message = pasteStatusMessage(this.clipboard.readMethodName(), pasted);
+        }
+        break;
+      }
+      case "pasteprimary":
+        await runAction("PastePrimary", this);
+        break;
       default: {
         const pluginCmd = this.context.plugins?.commands?.get(cmd);
         if (pluginCmd) {
           try {
-            await pluginCmd(makePaneAdapter(this.buffer), cmdArgs);
+            await pluginCmd(makePaneAdapter(this.buffer, this), cmdArgs);
           } catch (e) {
             this.message = String(e.message ?? e);
           }
@@ -4700,6 +4967,7 @@ const COMMAND_NAMES = [
   "cd", "pwd", "tab", "run", "vsplit", "hsplit", "term", "tts", "ttsspeed", "ttspitch", "ttslang", "reopen", "theme", "toggle", "tog",
   "togglelocal", "reset", "jump", "tabmove", "tabswitch", "textfilter", "bind", "unbind", "reload", "lintlog", "act", "action", "raw",
   "help", "plugin", "showkey", "memusage", "retab", "eval",
+  "copy", "cut", "cutline", "paste", "pasteprimary",
 ];
 
 const SUPPORTED_ENCODING_LABELS = [
@@ -4894,10 +5162,40 @@ function isEmptyUntitledBuffer(buffer) {
   return !buffer.path && !buffer.modified && buffer.lines.length === 1 && buffer.lines[0] === "";
 }
 
-function makePaneAdapter(buffer) {
+function formatAbsoluteCursorLocation(buffer) {
+  if (!buffer) return "+1:1";
+  const y = clamp(buffer.cursor?.y ?? 0, 0, Math.max(0, (buffer.lines?.length ?? 1) - 1));
+  const line = buffer.lines?.[y] ?? "";
+  const x = normalizeCharBoundary(line, buffer.cursor?.x ?? 0);
+  return `+${y + 1}:${x + 1}`;
+}
+
+function formatCursorLocation(buffer, pane = null) {
+  if (!buffer) return "+1.0:1";
+  const y = clamp(buffer.cursor?.y ?? 0, 0, Math.max(0, (buffer.lines?.length ?? 1) - 1));
+  const line = buffer.lines?.[y] ?? "";
+  const x = normalizeCharBoundary(line, buffer.cursor?.x ?? 0);
+  let subRow = 0;
+  let col = x + 1;
+  if (pane && (buffer.Settings?.softwrap ?? false)) {
+    const gutterW = editorGutterWidth(buffer);
+    const bufW = Math.max(1, (pane.w ?? process.stdout.columns ?? 80) - gutterW);
+    const wordwrap = buffer.Settings?.wordwrap ?? false;
+    const tabsize = buffer.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
+    const breaks = softwrapBreaks(line, bufW, wordwrap, tabsize);
+    subRow = softwrapRowOfCharIdx(breaks, x);
+    const segStart = breaks[subRow] ?? 0;
+    col = displayWidth(line.slice(segStart, x)) + 1;
+  }
+  return `+${y + 1}.${subRow}:${col}`;
+}
+
+function makePaneAdapter(buffer, app = null) {
   const pane = {
     Buf: makeBufferAdapter(buffer),
     Cursor: makeCursorAdapter(buffer),
+    CursorLocation: () => formatCursorLocation(buffer, app?.paneForBuffer?.(buffer) ?? app?.pane ?? null),
+    AbsoluteCursorLocation: () => formatAbsoluteCursorLocation(buffer),
     Save: () => buffer.save(),
     Backspace: () => buffer.backspace(),
     Delete: () => buffer.deleteForward(),
@@ -5206,19 +5504,27 @@ function detectTtsCmd() {
   return null;
 }
 
-async function loadBufferForPath(pathOrUrl, context) {
+function commandHasStartCursor(command = {}) {
+  return Boolean(command.startCursor && command.startCursor.line >= 1);
+}
+
+function commandHasStartupJump(command = {}) {
+  return commandHasStartCursor(command) || Boolean(command.searchRegex);
+}
+
+async function loadBufferForPath(pathOrUrl, context, command = {}) {
   if (isHttpUrl(pathOrUrl)) {
     let encoding = context.config?.globalSettings?.encoding ?? DEFAULT_SETTINGS.encoding;
     const decoded = await fetchTextWithEncoding(pathOrUrl, encoding);
     const text = decoded.text;
     encoding = decoded.encoding;
     const urlPath = pathOrUrl.replace(/[?#].*$/, "");
-    const buffer = new BufferModel({ path: pathOrUrl, text, command: {}, encoding });
+    const buffer = new BufferModel({ path: pathOrUrl, text, command, encoding });
     attachSyntax(buffer, context, urlPath, text);
     return buffer;
   }
-  const buffer = await BufferModel.fromFile(pathOrUrl, {}, context);
-  if (DEFAULT_SETTINGS.savecursor && context?.cursorStates?.[pathOrUrl]) {
+  const buffer = await BufferModel.fromFile(pathOrUrl, command, context);
+  if (DEFAULT_SETTINGS.savecursor && !commandHasStartupJump(command) && context?.cursorStates?.[pathOrUrl]) {
     const saved = context.cursorStates[pathOrUrl];
     const y = clamp(saved.y ?? 0, 0, buffer.lines.length - 1);
     const x = clamp(saved.x ?? 0, 0, buffer.lines[y]?.length ?? 0);
@@ -5476,6 +5782,15 @@ function lineNumberText(buf, lineNo, row, gutterW) {
     return String(Math.abs(lineNo - buf.cursor.y)).padStart(Math.max(0, gutterW - 1)) + " ";
   }
   return String(lineNo + 1).padStart(Math.max(0, gutterW - 1)) + " ";
+}
+
+function visualLineNumberText(subRow, gutterW) {
+  const text = `.${subRow}`;
+  const numberW = Math.max(0, gutterW - 1);
+  const padded = text.length >= numberW
+    ? text.slice(text.length - numberW)
+    : text.padStart(numberW);
+  return padded + " ";
 }
 
 const BRACE_PAIRS = { "(": ")", "[": "]", "{": "}" };
@@ -5740,7 +6055,7 @@ async function loadBuffers(files, command) {
   if (files.length > 0) {
     for (const file of files) {
       try {
-        buffers.push(await loadBufferForPath(file, loadBuffers.context ?? {}));
+        buffers.push(await loadBufferForPath(file, loadBuffers.context ?? {}, command));
       } catch (error) {
         console.error(error.message || error);
       }
@@ -5758,6 +6073,11 @@ async function loadBuffers(files, command) {
   return buffers.length ? buffers : [new BufferModel({ command })];
 }
 
+async function printReadmeDocs() {
+  const readme = await Bun.file(join(REPO_ROOT, "README.md")).text();
+  process.stdout.write(Bun.markdown.ansi(readme, { hyperlinks: true }));
+}
+
 async function main() {
   const { flags, files: rawFiles } = parseArgs(process.argv.slice(2));
   if (flags.help) {
@@ -5765,7 +6085,6 @@ async function main() {
     return;
   }
   if (flags.version) {
-    const clipboard = new ClipboardManager();
     const ttsCmd = detectTtsCmd();
     console.log(pkg.name+":",pkg.description)
     console.log("  Rewritten by: Dr. John (醫者小智)")
@@ -5774,9 +6093,24 @@ async function main() {
     console.log("Runtime:", `Bun ${Bun.version}`);
     console.log("Platform:", platformId());
     console.log("Http client:",detectHttpBackend());
-    console.log("Clipboard:", clipboard.methodName());
     console.log("TTS:", ttsCmd ? ttsCmd.cmd[0] : "not found");
     console.log({SUPPORTED_ENCODING_LABELS})
+    const clipboard = new ClipboardManager();
+    let osc52Available = false;
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      osc52Available = await probeOSC52(process.stdin, process.stdout, 150);
+      process.stdin.setRawMode?.(false);
+      process.stdin.pause();
+    }
+    const externalName = clipboard.methodName();
+    const backends = osc52Available ? `${externalName}, OSC 52` : externalName;
+    console.log("Clipboard:", backends);
+    return;
+  }
+  if (flags.docs) {
+    await printReadmeDocs();
     return;
   }
   if (flags.options) {
@@ -5797,7 +6131,7 @@ async function main() {
   const syntaxDefinitions = await loadSyntaxDefinitions(runtime);
 
   if (flags.cat) {
-    await catFiles(rawFiles, colorscheme, syntaxDefinitions);
+    await catFiles(rawFiles, colorscheme, syntaxDefinitions, config.getGlobalOption("encoding"));
     return;
   }
 
@@ -5835,8 +6169,8 @@ async function main() {
   }
 
   if (flags.clean) {
-    console.error("Clean is not implemented yet.");
-    process.exit(1);
+    await cleanConfig(config, plugins);
+    return;
   }
 
   const pluginErr = await plugins.loadAll();
@@ -5878,7 +6212,7 @@ async function main() {
   }
   const app = new App(buffers, context);
   jsPlugins.setApp(app);
-  if (plugins && !pluginErr && app.buffer) plugins.curPaneAdapter = makePaneAdapter(app.buffer);
+  if (plugins && !pluginErr && app.buffer) plugins.curPaneAdapter = makePaneAdapter(app.buffer, app);
   // Dispatch all JS plugin lifecycle hooks after setApp so TermMessage,
   // CurPane, cmd/action proxies, and buffer APIs all work correctly.
   await jsPlugins.run("preinit");
@@ -6014,6 +6348,26 @@ function uncommentText(line, commentType) {
   }
   return indent + rest;
 }
+function clipboardCopyMsg(clipboard, text, kind, verb = "Copied") {
+  const method = clipboard.methodName();
+  const alt = clipboard.altMethodName();
+  const chars = Array.from(String(text).replace(/\n$/, "")).length;
+  const label = typeof kind === "string" && (kind === "line" || kind.endsWith("lines"))
+    ? kind : `${chars} chars`;
+  if (alt) return `[Click:Copy>${alt}] ${method}: ${label} ${verb.toLowerCase()}`;
+  return `${verb} ${label} to ${method} clipboard`;
+}
+
+function clipboardAltAction(clipboard, text) {
+  const alt = clipboard.altMethodName();
+  if (!alt) return null;
+  return () => {
+    if (!clipboard.writeAlt(text)) return `${alt}: failed`;
+    const chars = Array.from(String(text).replace(/\n$/, "")).length;
+    return `${alt}: ${chars} chars copied`;
+  };
+}
+
 function pasteStatusMessage(method, text) {
   const value = String(text);
   const lines = value.split("\n").length;
@@ -6195,14 +6549,16 @@ function segmentSelection(selection, lineNo, start, end) {
 function parseLineCol(value) {
   const input = String(value).trim();
   if (!input) throw new Error("Not enough arguments");
-  const parts = input.split(":");
-  if (parts.length > 2 || parts[0] === "") throw new Error("Invalid line number");
-  if (parts.length === 2 && parts[1] === "") throw new Error("Invalid column number");
-  const line = Number(parts[0]);
-  const col = parts.length === 2 ? Number(parts[1]) : 1;
+  const match = input.match(/^(-?\d+)(?:\.(\d+))?(?::(-?\d+))?$/);
+  if (!match) throw new Error("Invalid line number");
+  const line = Number(match[1]);
+  const subRow = match[2] == null ? 0 : Number(match[2]);
+  const col = match[3] == null ? 1 : Number(match[3]);
   if (!Number.isInteger(line)) throw new Error("Invalid line number");
+  if (!Number.isInteger(subRow)) throw new Error("Invalid visual line number");
+  if (subRow < 0) throw new Error("Invalid visual line number");
   if (!Number.isInteger(col)) throw new Error("Invalid column number");
-  return { line, col };
+  return { line, subRow, col };
 }
 
 function parseOptionValue(value) {
@@ -6218,19 +6574,23 @@ function syncEditorSettings(config) {
   }
 }
 
-async function catFiles(files, colorscheme, syntaxDefinitions) {
+async function catFiles(files, colorscheme, syntaxDefinitions, encoding = DEFAULT_SETTINGS.encoding) {
   const targets = files.length > 0 ? files.map((f) => ({ path: f, stdin: false })) : [{ path: null, stdin: true }];
   for (const { path: filePath, stdin } of targets) {
     let content;
     let effectivePath = filePath;
     if (stdin) {
-      content = await Bun.stdin.text();
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      content = decodeTextBytesWithEncoding(Buffer.concat(chunks), encoding).text;
     } else if (isHttpUrl(filePath)) {
-      content = await fetchHttp(filePath);
+      const decoded = await fetchTextWithEncoding(filePath, encoding);
+      content = decoded.text;
       // Use the URL pathname for syntax/md detection (strip query/hash)
       try { effectivePath = new URL(filePath).pathname; } catch { effectivePath = filePath; }
     } else {
-      content = await Bun.file(filePath).text();
+      const decoded = await readTextFileWithEncoding(filePath, encoding);
+      content = decoded.text;
     }
     if (effectivePath && /\.md$/i.test(effectivePath)) {
       process.stdout.write(

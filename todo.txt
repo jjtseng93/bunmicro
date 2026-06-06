@@ -283,11 +283,15 @@ Clipboard / platform integration
     Remaining: real platform verification for wl-copy/wl-paste, xclip, xsel.
 [ ] Verify Android behavior only when process.platform reports android; Linux must not use Termux clipboard commands.
 [ ] Verify macOS pbcopy/pbpaste and Windows PowerShell Set-Clipboard/Get-Clipboard.
-[ ] Implement terminal OSC 52 clipboard method.
-[ ] Implement primary selection behavior for Linux where applicable.
+[~] Implement terminal OSC 52 clipboard method.
+    Done: osc52Clipboard backend + probeOSC52 exported from clipboard.js; App.start() probes on startup (150ms, before main data handler), upgrades _writeBackend if supported; tmux $TMUX env skips probe and uses DCS passthrough format; --version probes last and prints Clipboard: result after other fields.
+    Remaining: OSC 52 read (async response handling for Ctrl+V from system clipboard via escape sequence).
+[~] Implement primary selection behavior for Linux where applicable.
+    Done: wlClipboard read/write now pass --primary flag when register==="primary"; _syncPrimarySelection() called at end of every _dispatchInput event loop (keyboard+shift+arrows+alt-s+ctrl-a+mouse drag/double-click/gutter); middle mouse button click moves cursor to click position and pastes primary register.
+    Remaining: real platform testing; primary selection for macOS (no direct equivalent); wl-clipboard backend primary verification.
 [~] Implement internal multi-register clipboard and multi-cursor clipboard parity.
     Done: internal register map exists and is used as fallback; Ctrl-C/Ctrl-X/Ctrl-V/Ctrl-Y handle current selection and line copy/cut/paste.
-    Remaining: Go micro multi-register semantics, primary selection parity, multi-cursor clipboard behavior.
+    Remaining: Go micro multi-register semantics, multi-cursor clipboard behavior.
 
 Shell / jobs / terminal pane
 ----------------------------

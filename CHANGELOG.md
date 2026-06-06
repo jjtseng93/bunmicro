@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.19] - 2026-06-04
+- Fixed Windows clipboard
+- Fixed cli encoding help readme
+- Added cli clean config dir
+- Added softwrap subrow line number
+  * goto line
+  * show subrow line number in showpath
+  * pageup/down respects softwrap
+- Fixed CRLF being overwritten
+- Added primary clipboard 
+- Fixed clipboard cmd / action
+  * Ctrl+K should accumulate
+- Clipboard backend priority
+- Added OSC 52 clipboard copy
+  * Use by set clipboard terminal
+
 ## [0.9.10] - 2026-06-04
 - Up/Down key auto-complete selection in editor
 
