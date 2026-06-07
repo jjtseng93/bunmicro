@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.20] - 2026-06-07
+- Added cursor shape option
+- Fixed selection hide cursor
+
 ## [0.9.19] - 2026-06-06
 - Fixed Windows clipboard
 - Fixed cli encoding help readme
