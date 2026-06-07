@@ -81,6 +81,7 @@ const DEFAULT_SETTINGS = {
   tabsize: 4,
   tabstospaces: false,
   autosave: 0,
+  cursorshape: "block",
   cursorline: true,
   diffgutter: false,
   eofnewline: true,
@@ -1249,6 +1250,9 @@ class BufferModel {
   SetOption(option, value) {
     const oldValue = this.Settings[option];
     const parsed = parseOptionValue(value);
+    if (option === "cursorshape" && !OPTION_CHOICES.cursorshape.includes(String(parsed))) {
+      throw new Error(`Invalid value for cursorshape: ${parsed}`);
+    }
     if (option === "fileformat" && !OPTION_CHOICES.fileformat.includes(String(parsed))) {
       throw new Error(`Invalid value for fileformat: ${parsed}`);
     }
@@ -1263,6 +1267,9 @@ class BufferModel {
 
   DoSetOptionNative(option, value) {
     const oldValue = this.Settings[option];
+    if (option === "cursorshape" && !OPTION_CHOICES.cursorshape.includes(String(value))) {
+      throw new Error(`Invalid value for cursorshape: ${value}`);
+    }
     if (option === "fileformat" && !OPTION_CHOICES.fileformat.includes(String(value))) {
       throw new Error(`Invalid value for fileformat: ${value}`);
     }
@@ -1966,8 +1973,19 @@ class App {
         cursorCol = p.x + gutterW + displayWidth(line.slice(buf.scroll.x, cursorX));
       }
 
-      const cursorVisible = cursorRow >= p.y && cursorRow < p.y + p.h && cursorCol >= p.x && cursorCol < p.x + p.w;
-      this.screen.setCursor(clamp(cursorCol, 0, this.cols - 1), clamp(cursorRow, 0, this.rows - 1), cursorVisible, "steady-block");
+      // Go micro hides the terminal cursor while a non-empty selection is
+      // active. Otherwise its block cursor makes the exclusive selection end
+      // look selected even though copy/cut correctly omit that character.
+      const hasSelection = p.selection && !sameLoc(p.selection.start, p.selection.end);
+      const cursorVisible = !hasSelection &&
+        cursorRow >= p.y && cursorRow < p.y + p.h &&
+        cursorCol >= p.x && cursorCol < p.x + p.w;
+      this.screen.setCursor(
+        clamp(cursorCol, 0, this.cols - 1),
+        clamp(cursorRow, 0, this.rows - 1),
+        cursorVisible,
+        DEFAULT_SETTINGS.cursorshape,
+      );
     } else if (!this.prompt && activePaneObj?.type !== "term") {
       this.screen.setCursor(0, 0, false);
     }

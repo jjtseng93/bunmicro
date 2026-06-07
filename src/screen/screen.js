@@ -3,6 +3,20 @@ import { styleToAnsi } from "../display/ansi-style.js";
 import { CellBuffer } from "./cell-buffer.js";
 import { DISABLE_MOUSE, DISABLE_PASTE, ENABLE_MOUSE, ENABLE_PASTE, ResizeEvent } from "./events.js";
 
+const CURSOR_SHAPE_SEQUENCE = {
+  default: "\x1b[0 q",
+  "blinking-block": "\x1b[1 q",
+  block: "\x1b[2 q",
+  "blinking-underline": "\x1b[3 q",
+  underline: "\x1b[4 q",
+  "blinking-bar": "\x1b[5 q",
+  bar: "\x1b[6 q",
+};
+
+export function cursorShapeSequence(shape) {
+  return CURSOR_SHAPE_SEQUENCE[shape] ?? CURSOR_SHAPE_SEQUENCE.block;
+}
+
 export class Screen {
   constructor({ mouse = true } = {}) {
     this.mouse = mouse;
@@ -23,7 +37,7 @@ export class Screen {
   fini() {
     if (this.mouse) this.write(DISABLE_MOUSE);
     this.write(DISABLE_PASTE);
-    this.write("\x1b[?25h\x1b[?1049l\x1b[0m");
+    this.write("\x1b[0 q\x1b[?25h\x1b[?1049l\x1b[0m");
   }
 
   SetContent(x, y, ch, combining = [], style = null) {
@@ -81,9 +95,7 @@ export class Screen {
     }
     out += "\x1b[0m";
     if (this.cursor && this.cursorVisible) {
-      // cursor shape: 1/2=block, 3/4=underline, 5/6=bar; odd=blink even=steady
-      const shape = this.cursor.shape === "bar" ? "\x1b[5 q" : this.cursor.shape === "steady-block" ? "\x1b[2 q" : "\x1b[1 q";
-      out += shape + this.move(this.cursor.y + 1, this.cursor.x + 1) + "\x1b[?25h";
+      out += cursorShapeSequence(this.cursor.shape) + this.move(this.cursor.y + 1, this.cursor.x + 1) + "\x1b[?25h";
     } else out += "\x1b[?25l";
     this.write(out);
     this.previous = this.cells.clone();

@@ -15,6 +15,7 @@ Current handoff notes
     - Always emits ANSI codes regardless of TTY state.
     - -profile removed from usage (flag parsed but never implemented in Go either; -debug kept for future log.txt work).
 [x] Recent editor UX parity implemented:
+    - Global cursorshape option supports common DECSCUSR cursor shapes: default, steady/blinking block, underline, and bar, with command completion.
     - Tab autocomplete candidate row cycles highlight correctly and only highlights the selected candidate text.
     - Tab autocomplete single-match case fixed: was silently no-op due to acHas=false; now inserts suffix directly.
     - Mouse click on autocomplete candidates no longer moves the editor cursor to the click location.

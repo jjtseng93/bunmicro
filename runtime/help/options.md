@@ -94,6 +94,13 @@ Here are the available options:
 
     default value: `true`
 
+* `cursorshape`: sets the editor cursor shape using the terminal's DECSCUSR
+   support. This setting is `global only`. Supported values are `default`,
+   `block`, `underline`, `bar`, and their `blinking-` variants. The plain
+   shape names use a steady cursor.
+
+    default value: `block`
+
 * `detectlimit`: if this is not set to 0, it will limit the amount of first
    lines in a file that are matched to determine the filetype.
    A higher limit means better accuracy of guessing the filetype, but also
@@ -566,6 +573,7 @@ so that you can see what the formatting should look like.
     "colorscheme": "default",
     "comment": true,
     "cursorline": true,
+    "cursorshape": "block",
     "detectlimit": 100,
     "diff": true,
     "diffgutter": false,

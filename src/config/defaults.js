@@ -57,6 +57,7 @@ export const DEFAULT_GLOBAL_ONLY_SETTINGS = {
   autosave: 0,
   clipboard: "external",
   colorscheme: "default",
+  cursorshape: "block",
   savehistory: true,
   divchars: "|-",
   divreverse: true,
@@ -81,6 +82,12 @@ export const DEFAULT_GLOBAL_ONLY_SETTINGS = {
 
 export const OPTION_CHOICES = {
   clipboard: ["internal", "external", "terminal"],
+  cursorshape: [
+    "default",
+    "block", "blinking-block",
+    "underline", "blinking-underline",
+    "bar", "blinking-bar",
+  ],
   fileformat: ["unix", "dos"],
   helpsplit: ["hsplit", "vsplit"],
   matchbracestyle: ["underline", "highlight"],
