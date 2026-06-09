@@ -41,6 +41,8 @@ Flat buffer helpers (all 1-based line numbers, omit → cursor line):
 Other micro APIs:
   micro.CurPane()              — returns pane adapter for active pane
   micro.MakeCommand(name, fn)  — register Ctrl+E command; fn(bp, args[])
+                                 args.raw = full original input string (bypass shellSplit)
+                                 e.g. for command "js 1+1": args.raw = "js 1+1", args.raw.slice(3) = "1+1"
   micro.RegisterAction(name, fn) — register bindable action
   micro.TermMessage(msg)       — show msg in editor status row
   micro.alert(msg)             — suspend editor, print msg, wait for Enter
@@ -70,12 +72,10 @@ micro.on("init", () => {
 
   micro.MakeCommand("js", async (bp, args) =>
   {
-    let scriptText=args.join("\n");
-
-    await micro.alert(
-      await eval(scriptText)
-    )
-    
+    // args.raw is the full original input string, e.g. "js console.log('hi')"
+    // slice(3) skips the "js " prefix (2-char name + 1 space)
+    const scriptText = args.raw?.slice(3) ?? args.join(" ");
+    await micro.alert(await eval(scriptText));
   });
   
 

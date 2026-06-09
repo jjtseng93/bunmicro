@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.21] - 2026-06-09
+- Prompt mouse click repositions cursor (command and shell prompt)
+- Clicking > or $ label toggles between command/shell prompt, preserving input
+- Prompt mouse double click: left=key-down, middle=key-up, right=key-enter (command and shell prompt)
+- js and eval js/py/sh commands
+
 ## [0.9.20] - 2026-06-07
 - Added cursor shape option
 - Fixed selection hide cursor

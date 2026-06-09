@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import child_process from "node:child_process"
-import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, basename, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1935,7 +1935,11 @@ class App {
       const totalText = this.prompt.label + this.prompt.value;
       const labelW = displayWidth(this.prompt.label);
       const cursorInTotal = labelW + displayWidth(this.prompt.value.slice(0, this.prompt.cursor));
-      const scrollX = Math.max(0, cursorInTotal - (this.cols - 1));
+      let scrollX = this._promptScrollX ?? 0;
+      if (cursorInTotal > scrollX + this.cols - 1) scrollX = cursorInTotal - (this.cols - 1);
+      if (cursorInTotal < scrollX) scrollX = cursorInTotal;
+      scrollX = Math.max(0, scrollX);
+      this._promptScrollX = scrollX;
       const startIdx = scrollX > 0 ? visualColToCharIdx(totalText, 0, scrollX) : 0;
       putText(this.screen, 0, promptRow, totalText.slice(startIdx), promptStyle, this.cols);
       this.screen.setCursor(cursorInTotal - scrollX, promptRow, true, "bar");
@@ -3191,6 +3195,61 @@ class App {
       this._suppressMouseUntilUp = false;
     }
 
+    // Prompt row click: reposition cursor, toggle shell/command mode, or zone double-click
+    if (this.prompt && event.y === this.rows - 1) {
+      if ((event.action === "down" || event.action === "drag") && event.button === "left") {
+        const totalText = this.prompt.label + this.prompt.value;
+        const scrollX = this._promptScrollX ?? 0;
+        const startIdx = scrollX > 0 ? visualColToCharIdx(totalText, 0, scrollX) : 0;
+        const clickedCharIdx = visualColToCharIdx(totalText, startIdx, event.x);
+
+        if (event.action === "down") {
+          // Double-click zone: divide prompt row into thirds
+          const third = Math.floor(this.cols / 3);
+          const zone = event.x < third ? "left" : event.x < third * 2 ? "middle" : "right";
+          const now = Date.now();
+          const isDoubleClick = this._lastPromptClickZone === zone &&
+                                now - (this._lastPromptClickTime ?? 0) < 400;
+          this._lastPromptClickTime = now;
+          this._lastPromptClickZone = zone;
+
+          if (isDoubleClick && !this.prompt.yn) {
+            if (zone === "left") {
+              this.prompt.historyDown();
+            } else if (zone === "middle") {
+              this.prompt.historyUp();
+            } else {
+              const prompt = this.prompt;
+              this.prompt = null;
+              prompt.commit();
+              await prompt.callback(prompt.value);
+            }
+            this.render();
+            return;
+          }
+
+          // Single click on label (> or $): toggle Command ↔ Shell
+          if (clickedCharIdx < this.prompt.label.length &&
+              (this.prompt.type === "Command" || this.prompt.type === "Shell")) {
+            const val = this.prompt.value;
+            if (this.prompt.type === "Command") {
+              this.openShellMode();
+              this.prompt.value = val;
+              this.prompt.cursor = val.length;
+            } else {
+              this.openCommandMode(val);
+            }
+            this.render();
+            return;
+          }
+        }
+
+        this.prompt.cursor = Math.max(0, Math.min(clickedCharIdx - this.prompt.label.length, this.prompt.value.length));
+        this.render();
+      }
+      return;
+    }
+
     if (this.handleSuggestionMouse(event)) {
       this.render();
       return;
@@ -3611,6 +3670,19 @@ class App {
       this.prompt.cursor = 0;
     } else if (key === "end" || key === "ctrl-e") {
       this.prompt.cursor = this.prompt.value.length;
+    } else if (key === "ctrl-u") {
+      const prompt = this.prompt;
+      prompt.value = prompt.value.slice(prompt.cursor);
+      prompt.cursor = 0;
+      prompt.resetCompletion();
+      this.message = "";
+      prompt.onDelta?.(prompt.value);
+    } else if (key === "ctrl-k") {
+      const prompt = this.prompt;
+      prompt.value = prompt.value.slice(0, prompt.cursor);
+      prompt.resetCompletion();
+      this.message = "";
+      prompt.onDelta?.(prompt.value);
     } else if (key === "backspace") {
       const prompt = this.prompt;
       if (prompt.cursor > 0) {
@@ -3674,6 +3746,7 @@ class App {
 
   openPrompt(label, callback, options = {}) {
     this.prompt = new Prompt(label, callback, options);
+    this._promptScrollX = 0;
   }
 
   openYNPrompt(label, callback, { onCancel = null } = {}) {
@@ -4554,9 +4627,53 @@ class App {
         this.message = toSpaces ? "Retabbed to spaces" : "Retabbed to tabs";
         break;
       }
-      case "eval":
-        this.message = "Eval unsupported";
+      case "eval": {
+        const lang = cmdArgs[0];
+        if (!lang) { this.message = "Usage: eval js|py|sh [code]"; break; }
+        if (lang !== "js" && lang !== "py" && lang !== "sh") {
+          this.message = `eval: unknown language '${lang}' — use js, py, or sh`;
+          break;
+        }
+        // Code source: inline (raw, bypass shell quoting) or selection
+        let evalCode;
+        const inlineMatch = /^\s*eval\s+(?:js|py|sh)\s+(.+)$/s.exec(input);
+        if (inlineMatch) {
+          evalCode = inlineMatch[1];
+        } else {
+          const sel = this.pane?.selection;
+          evalCode = (sel && !sameLoc(sel.start, sel.end)) ? getSelectionText(buf, sel) : null;
+          if (!evalCode) { this.message = `eval ${lang}: select text, or use: eval ${lang} <code>`; break; }
+        }
+        // Build temp file
+        const { tmpdir } = await import("node:os");
+        const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+        let ext, execArgs, fileContent = evalCode;
+        if (lang === "js") {
+          ext = "js";
+          execArgs = [Bun.which("bun") ?? "bun"];
+        } else if (lang === "py") {
+          ext = "py";
+          const pyBin = process.platform === "win32" ? "python" : "python3";
+          execArgs = [Bun.which(pyBin) ?? pyBin];
+        } else { // sh
+          if (existsSync("/bin/sh")) {
+            ext = "sh";
+            execArgs = ["/bin/sh"];
+          } else {
+            ext = "js";
+            fileContent = `import { $ } from "bun";\nawait $\`\n${evalCode}\n\`;\n`;
+            execArgs = [Bun.which("bun") ?? "bun"];
+          }
+        }
+        const evalTmpFile = join(tmpdir(), `bunmicro-tmp${suffix}.${ext}`);
+        await Bun.write(evalTmpFile, fileContent);
+        try {
+          await this.runInteractiveShell([...execArgs, evalTmpFile]);
+        } finally {
+          try { unlinkSync(evalTmpFile); } catch {}
+        }
         break;
+      }
       case "bind":
       case "unbind":
         this.message = `${cmd}: keybinding system not yet implemented`;
@@ -4660,6 +4777,7 @@ class App {
         const pluginCmd = this.context.plugins?.commands?.get(cmd);
         if (pluginCmd) {
           try {
+            cmdArgs.raw = input;
             await pluginCmd(makePaneAdapter(this.buffer, this), cmdArgs);
           } catch (e) {
             this.message = String(e.message ?? e);

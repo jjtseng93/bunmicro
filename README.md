@@ -24,12 +24,13 @@
 - Alt-s to enter selection mode
 - Useful without a mouse on Android
 - Also available: Ctrl-E act SelectRight
-## js plugin
+## js plugin / command
 - Instead of writing Lua, use your familiar JavaScript to extend functionalities
 - runtime/jsplugins/`name`/`name`.js
 - a full documentation in example.js
 - an example plugin named chapter for turning to the next/prev page by number. 
 - It registers 2 commands: next/prevchapter
+- js and eval js command explained at the bottom
 ## Output highlighted text to terminal
 - Works like bat ccat glow
 - bunmicro -bat file
@@ -179,16 +180,51 @@ bun x bunmicro
 - Encoding: Reopen with a specific encoding. 
   * Show supported encodings by bunmicro --version
 - Alt-G: Show nano-like key bindings menu 
+- Command/Shell Prompt row:
+  * See the next section
 
 # Command/Shell Prompts
 ## Command
 - Internal commands for automating / tuning bunmicro
 - Press Tab for available commands, arrow keys for selection
 - In this Bun version, I added more commands like
-  * js to eval JavaScript
   * act/action to do automation actions.
   * Press tab after act to get a list of them
   * or use help actions to show the list
+
+## eval — run code in py/js/sh
+- Executed in a separate processs
+- `eval js` — run selected text as JavaScript (via Bun)
+- `eval py` — run selected text as Python (python3 / python on Windows)
+- `eval sh` — run selected text as shell script (/bin/sh, or Bun shell on Windows)
+- If no text is selected, append code inline:
+  * `eval js console.log("hi")`
+  * `eval py print("hi")`
+  * `eval sh echo hi`
+- Code after the language name is taken literally (no shell quoting)
+- Output is shown in the terminal (same as Ctrl-B shell mode)
+- Runs via a temp file (`bunmicro-tmpXXXXXXXX.js/py/sh`), deleted after execution
+
+## js — eval JavaScript inline
+- Executed inside bunmicro's jsplugin context, 
+- `js <expression or code>`
+- Code is passed raw to await eval (bypass shell quoting), result shown via alert
+- Examples: 
+- `js new Date().toISOString()`
+- `js let ln=micro.getLine(); ln`
+- Implemented in `runtime/jsplugins/example/example.js` as a demo of `micro.MakeCommand`
 ## Shell
 - Executes a given shell command like sh -c
 - Outputs the result to the original terminal before entering bunmicro
+## Prompt mouse gestures
+- Click anywhere: move cursor to that position
+- Click `>` or `$` label: toggle between Command and Shell mode (input is preserved)
+- Double click left ⅓ of row: newer history (same as ↓ key)
+- Double click middle ⅓ of row: older history (same as ↑ key)
+- Double click right ⅓ of row: execute the current input (same as Enter)
+## Prompt keyboard shortcuts
+- `Ctrl-U`: delete everything before cursor
+- `Ctrl-K`: delete everything after cursor
+- `Ctrl-A` / `Home`: move cursor to start
+- `Ctrl-E` / `End`: move cursor to end 
+- `↑` / `↓`: navigate command history
