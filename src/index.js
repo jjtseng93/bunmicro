@@ -1884,8 +1884,14 @@ class App {
     let sx = 0, x0;
     // name
     x0 = sx;
-    sx = putText(this.screen, sx, statusRow, ` ${name}${dirty} `, isReadonlyBuffer(buf) ? redStatus : baseStatus, this.cols - sx);
+    sx = putText(this.screen, sx, statusRow, ` ${name}`, isReadonlyBuffer(buf) ? redStatus : baseStatus, this.cols - sx);
     markZone("name", x0, sx);
+    if (dirty) {
+      x0 = sx;
+      sx = putText(this.screen, sx, statusRow, dirty, baseStatus, this.cols - sx);
+      markZone("dirty", x0, sx);
+    }
+    sx = putText(this.screen, sx, statusRow, " ", baseStatus, this.cols - sx);
     // (row,col)
     sx = putText(this.screen, sx, statusRow, "(", baseStatus, this.cols - sx);
     x0 = sx;
@@ -3478,6 +3484,12 @@ class App {
           this.nextTab();
         }
         break;
+      case "dirty": {
+        const name = buf?.name ?? "No name";
+        const filename = /^[^\s"'\\]+$/.test(name) ? name : JSON.stringify(name);
+        this.openCommandMode(`save ${filename}`);
+        break;
+      }
       case "row":
         if (isTerm) {
           this.pane.terminal?.write("\x12");
@@ -3540,10 +3552,10 @@ class App {
         await this.addTab();
         break;
       case "cmdmode":
-        this.openCommandMode();
+        await this.togglePromptMode("Command");
         break;
       case "shellmode":
-        this.openShellMode();
+        await this.togglePromptMode("Shell");
         break;
     }
     return true;
@@ -3751,6 +3763,18 @@ class App {
 
   openYNPrompt(label, callback, { onCancel = null } = {}) {
     this.prompt = new Prompt(label, callback, { yn: true, onCancel });
+  }
+
+  async togglePromptMode(type) {
+    if (this.prompt?.type === type) {
+      const prompt = this.prompt;
+      this.prompt = null;
+      await prompt.onCancel?.();
+      return;
+    }
+
+    if (type === "Command") this.openCommandMode();
+    else this.openShellMode();
   }
 
   async checkExternalReload() {
@@ -5649,17 +5673,18 @@ function commandHasStartupJump(command = {}) {
 }
 
 async function loadBufferForPath(pathOrUrl, context, command = {}) {
+  let buffer;
   if (isHttpUrl(pathOrUrl)) {
     let encoding = context.config?.globalSettings?.encoding ?? DEFAULT_SETTINGS.encoding;
     const decoded = await fetchTextWithEncoding(pathOrUrl, encoding);
     const text = decoded.text;
     encoding = decoded.encoding;
     const urlPath = pathOrUrl.replace(/[?#].*$/, "");
-    const buffer = new BufferModel({ path: pathOrUrl, text, command, encoding });
+    buffer = new BufferModel({ path: pathOrUrl, text, command, encoding });
     attachSyntax(buffer, context, urlPath, text);
-    return buffer;
+  } else {
+    buffer = await BufferModel.fromFile(pathOrUrl, command, context);
   }
-  const buffer = await BufferModel.fromFile(pathOrUrl, command, context);
   if (DEFAULT_SETTINGS.savecursor && !commandHasStartupJump(command) && context?.cursorStates?.[pathOrUrl]) {
     const saved = context.cursorStates[pathOrUrl];
     const y = clamp(saved.y ?? 0, 0, buffer.lines.length - 1);
