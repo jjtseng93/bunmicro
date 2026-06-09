@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.22] - 2026-06-09
+- Clicking on icons toggles prompts
+- Unsaved star triggers save cmd
+- URLs support save cursor
+
 ## [0.9.21] - 2026-06-09
 - Prompt mouse click repositions cursor (command and shell prompt)
 - Clicking > or $ label toggles between command/shell prompt, preserving input
