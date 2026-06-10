@@ -1792,7 +1792,7 @@ class App {
     const activeSuggestions = this._activeSuggestions();
     const activeSuggestionIdx = this._activeSuggestionIdx();
     const formatWarning = this.buffer?.filetype === "shell" && this.buffer?.fileformat === "dos"
-      ? "dos(CRLF) shell scripts are invalid!"
+      ? "dos(CRLF fileformat) invalid for shell scripts!"
       : "";
     const activeMessage = this.message || this.buffer?.message || formatWarning;
     if (activeSuggestions.length === 0) this._acHScroll = 0;
