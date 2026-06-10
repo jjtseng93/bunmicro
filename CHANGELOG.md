@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.23] - 2026-06-10
+- Fixed mouse close prompt cursor move
+- Fixed set filetype doesn't apply instantly
+- Added syntax highlighting fallback if user ~/.config/micro yaml fails 
+- Redetect highlighting syntax when unknown filetype saves
+- Warning for dos(CRLF) shell scripts
+
 ## [0.9.22] - 2026-06-09
 - Clicking on icons toggles prompts
 - Unsaved star triggers save cmd
