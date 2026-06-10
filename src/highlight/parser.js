@@ -47,25 +47,30 @@ export async function loadSyntaxDefinitions(runtime) {
   const definitions = [];
   for (const file of runtime.list(1)) {
     let text = "";
-    try {
-      text = await file.text();
-    } catch (e) {
-      console.error("Failed to read syntax yaml:", file.name);
-      console.error("  Will not highlight this kind of file");
-      console.error("  @ loadSyntaxDefinitions ");
-      continue;
-    }
-
+    let activeFile = file;
     let source = null;
     try {
+      text = await file.text();
       source = Bun.YAML.parse(text);
     } catch (e) {
-      console.error("Failed to parse syntax yaml:", file.name);
+      const fallback = file.real ? runtime.fallback?.(1, file.name) : null;
+      if (fallback) {
+        try {
+          text = await fallback.text();
+          source = Bun.YAML.parse(text);
+          activeFile = fallback;
+          console.error("Failed to load user syntax yaml, using built-in fallback:", file.name);
+        } catch {}
+      }
+    }
+
+    if (!source) {
+      console.error("Failed to load syntax yaml:", file.name);
       console.error("  Will not highlight this kind of file");
       console.error("  @ loadSyntaxDefinitions ");
     }
 
-    const header = headers.get(file.name) ?? (source ? parseHeaderYaml(source) : parseHeaderTextFallback(text, file.name));
+    const header = headers.get(activeFile.name) ?? (source ? parseHeaderYaml(source) : parseHeaderTextFallback(text, activeFile.name));
     definitions.push(new SyntaxDefinition(header, source ?? { rules: [] }, text));
   }
   return definitions;

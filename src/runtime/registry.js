@@ -14,11 +14,13 @@ export class RuntimeRegistry {
     this.configDir = configDir;
     this.files = [[], [], [], [], []];
     this.realFiles = [[], [], [], [], []];
+    this.fallbackFiles = [[], [], [], [], []];
   }
 
   async init({ user = true } = {}) {
     this.files = [[], [], [], [], []];
     this.realFiles = [[], [], [], [], []];
+    this.fallbackFiles = [[], [], [], [], []];
     await this.addRuntimeKind(RTColorscheme, "colorschemes", ".micro", user);
     await this.addRuntimeKind(RTSyntax, "syntax", ".yaml", user);
     await this.addRuntimeKind(RTSyntaxHeader, "syntax", ".hdr", user);
@@ -36,7 +38,10 @@ export class RuntimeRegistry {
     for (const entry of entries) {
       if (entry.isDirectory() || !entry.name.endsWith(extension)) continue;
       const file = new RuntimeFile(join(dir, entry.name), real);
-      if (!real && this.realFiles[kind].some((f) => f.name === file.name)) continue;
+      if (!real && this.realFiles[kind].some((f) => f.name === file.name)) {
+        this.fallbackFiles[kind].push(file);
+        continue;
+      }
       this.files[kind].push(file);
       if (real) this.realFiles[kind].push(file);
     }
@@ -52,6 +57,10 @@ export class RuntimeRegistry {
 
   find(kind, name) {
     return this.list(kind).find((file) => file.name === name) ?? null;
+  }
+
+  fallback(kind, name) {
+    return this.fallbackFiles[kind]?.find((file) => file.name === name) ?? null;
   }
 }
 
