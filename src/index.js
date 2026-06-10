@@ -1092,6 +1092,7 @@ class BufferModel {
   }
   async save(path = this.path) {
     if (!path) throw new Error("No filename");
+    const detectSyntaxAfterSave = this.filetype === "unknown";
     let text = this.lines.join("\n");
     if (this.encoding === "hex3") {
       await Bun.write(path, decodeBinaryBytes(Buffer.from(text, "latin1")));
@@ -1106,6 +1107,7 @@ class BufferModel {
       this._savedSerial = this._undoSerial ?? 0;
       this.modified = false;
       this.message = `Saved ${path}`;
+      if (detectSyntaxAfterSave && this._syntaxContext) attachSyntax(this, this._syntaxContext, path, text);
       return;
     }
     if ((this.Settings.eofnewline ?? DEFAULT_SETTINGS.eofnewline) && !text.endsWith("\n")) text += "\n";
@@ -1123,6 +1125,7 @@ class BufferModel {
     this._savedSerial = this._undoSerial ?? 0;
     this.modified = false;
     this.message = `Saved ${path}`;
+    if (detectSyntaxAfterSave && this._syntaxContext) attachSyntax(this, this._syntaxContext, path, text);
   }
 
   // --- Autocomplete (BufferComplete) ---
@@ -1788,7 +1791,10 @@ class App {
     const keymenuHeight = this.keymenu ? KEYDISPLAY.length : 0;
     const activeSuggestions = this._activeSuggestions();
     const activeSuggestionIdx = this._activeSuggestionIdx();
-    const activeMessage = this.message || this.buffer?.message || "";
+    const formatWarning = this.buffer?.filetype === "shell" && this.buffer?.fileformat === "dos"
+      ? "dos(CRLF) shell scripts are invalid!"
+      : "";
+    const activeMessage = this.message || this.buffer?.message || formatWarning;
     if (activeSuggestions.length === 0) this._acHScroll = 0;
     const suggestionsHeight = activeSuggestions.length > 1 ? 1 : 0;
     const messageHeight = suggestionsHeight ? 0 : activeMessage ? 1 : 0;
@@ -3517,18 +3523,7 @@ class App {
         }
         break;
       case "ft": {
-        const defs = this.context.syntaxDefinitions ?? [];
-        const filetypes = defs.map(d => d.filetype).filter(Boolean).sort();
-        const ftComplete = (partial) => filetypes.filter(f => f.startsWith(partial));
-        this.openPrompt("Set filetype: ", (value) => {
-          if (!value || !buf) return;
-          buf.filetype = value;
-          buf.Settings.filetype = value;
-          const def = defs.find(d => d.filetype === value);
-          buf.syntaxDefinition = def ?? null;
-          buf.highlighter = def ? new Highlighter(def, defs) : null;
-          buf._highlightCache = null;
-        }, { completer: ftComplete, initial: buf?.filetype ?? "" });
+        this.openCommandMode("set filetype ");
         break;
       }
       case "fmt":
@@ -3552,9 +3547,11 @@ class App {
         await this.addTab();
         break;
       case "cmdmode":
+        if (this.prompt?.type === "Command") this._suppressMouseUntilUp = true;
         await this.togglePromptMode("Command");
         break;
       case "shellmode":
+        if (this.prompt?.type === "Shell") this._suppressMouseUntilUp = true;
         await this.togglePromptMode("Shell");
         break;
     }
@@ -5149,6 +5146,18 @@ function completeOptionValue(cmd, option, partial, context) {
   const optVal = allSettings[option];
   const suggestions = [];
 
+  if (option === "filetype") {
+    const filetypes = [
+      "off",
+      "unknown",
+      ...(context?.syntaxDefinitions ?? []).map((definition) => definition.filetype),
+    ];
+    return [...new Set(filetypes)]
+      .filter((filetype) => filetype && filetype.startsWith(partial))
+      .sort()
+      .map((filetype) => ({ value: `${cmd} ${option} ${filetype}`, label: filetype }));
+  }
+
   if (typeof optVal === "boolean") {
     if ("on".startsWith(partial)) suggestions.push("on");
     else if ("true".startsWith(partial)) suggestions.push("true");
@@ -6229,9 +6238,14 @@ async function loadBuffers(files, command) {
     if (loadBuffers.context) attachSyntax(stdinBuf, loadBuffers.context, "", stdinText);
     buffers.push(stdinBuf);
   } else {
-    buffers.push(new BufferModel({ command }));
+    const buffer = new BufferModel({ command });
+    if (loadBuffers.context) attachSyntax(buffer, loadBuffers.context, "", "");
+    buffers.push(buffer);
   }
-  return buffers.length ? buffers : [new BufferModel({ command })];
+  if (buffers.length > 0) return buffers;
+  const buffer = new BufferModel({ command });
+  if (loadBuffers.context) attachSyntax(buffer, loadBuffers.context, "", "");
+  return [buffer];
 }
 
 async function printReadmeDocs() {
@@ -6666,6 +6680,7 @@ function getSelectionText(buf, selection) {
 }
 
 function attachSyntax(buffer, context, path, text) {
+  buffer._syntaxContext = context;
   const def = detectBufferSyntax(context.syntaxDefinitions, path, text);
   buffer.syntaxDefinition = def;
   buffer.filetype = def?.filetype ?? "unknown";
@@ -6673,21 +6688,32 @@ function attachSyntax(buffer, context, path, text) {
   buffer.highlighter = def ? new Highlighter(def, context.syntaxDefinitions ?? []) : null;
   buffer._highlightCache = null;
   buffer._onOptionChange = (option, oldVal, newVal) => {
+    if (option === "filetype") setBufferFiletype(buffer, context, newVal);
     const ba = makeBufferAdapter(buffer);
     context.plugins?.run("onBufferOptionChanged", ba, option, oldVal, newVal);
     context.jsPlugins?.run("onBufferOptionChanged", ba, option, oldVal, newVal);
   };
 }
 
+function setBufferFiletype(buffer, context, filetype) {
+  const value = String(filetype);
+  const definitions = context?.syntaxDefinitions ?? [];
+  const def = definitions.find((candidate) => candidate.filetype === value) ?? null;
+  buffer.filetype = value;
+  buffer.Settings.filetype = value;
+  buffer.syntaxDefinition = def;
+  buffer.highlighter = def ? new Highlighter(def, definitions) : null;
+  buffer._highlightCache = null;
+}
+
 function detectBufferSyntax(definitions, path, text) {
   if (!definitions) return null;
-  const lines = String(text).split("\n").slice(0, 50);
+  const lines = normalizeBufferText(text).split("\n").slice(0, 50);
   return detectSyntax(definitions, { path, firstLine: lines[0] ?? "", lines });
 }
 
 function detectBufferFiletype(definitions, path, text) {
   if (!definitions) return "unknown";
-  const lines = String(text).split("\n").slice(0, 50);
   return detectBufferSyntax(definitions, path, text)?.filetype ?? "unknown";
 }
 
@@ -6761,7 +6787,7 @@ async function catFiles(files, colorscheme, syntaxDefinitions, encoding = DEFAUL
       );
       continue;
     }
-    const lines = content.split("\n");
+    const lines = normalizeBufferText(content).split("\n");
     const def = detectSyntax(syntaxDefinitions, {
       path: effectivePath ?? "",
       firstLine: lines[0] ?? "",
