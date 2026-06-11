@@ -1,6 +1,6 @@
 {
   "name": "bunmicro",
-  "version": "0.9.23",
+  "version": "0.9.24",
   "description": "Bun JavaScript rewrite of the micro editor originally in Golang",
   "type": "module",
   "main": "./src/index.js",
@@ -10,7 +10,8 @@
   },
   "scripts": {
     "start": "bun ./src/index.js",
-    "check": "node --check ./src/index.js"
+    "check": "node --check ./src/index.js",
+    "demo:pty": "bun ./tests/pty-demo.js"
   },
   "dependencies": {
     "wasmoon": "^1.16.0"

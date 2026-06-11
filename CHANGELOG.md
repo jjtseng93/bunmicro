@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.25] - 2026-06-10
+- Fixed colorscheme: aligned with go
+- Added colorcolumn taberror showchars
+  * e.g. showchars = tab=>,space=.
+- linter underline
+- set hltrailingws on : whitespace
+- Added tests/pty-demo.js
+  * Demo of the whole bunmicro App
+  * bun tests/pty-demo.js
+
 ## [0.9.23] - 2026-06-10
 - Fixed mouse close prompt cursor move
 - Fixed set filetype doesn't apply instantly
