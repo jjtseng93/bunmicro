@@ -7,17 +7,6 @@ export const DEFAULT_STYLE = {
   underline: false,
 };
 
-// Built-in fallback styles for color groups not defined in a colorscheme.
-// Matches Go micro's default group colours.
-const BUILTIN_GROUPS = {
-  "diff-added":    { ...DEFAULT_STYLE, fg: "green" },
-  "diff-modified": { ...DEFAULT_STYLE, fg: "yellow" },
-  "diff-deleted":  { ...DEFAULT_STYLE, fg: "red" },
-  "gutter-error":  { ...DEFAULT_STYLE, fg: "red" },
-  "gutter-warning":{ ...DEFAULT_STYLE, fg: "yellow" },
-  "gutter-info":   { ...DEFAULT_STYLE, fg: "brightblue" },
-};
-
 const COLOR_LINK = /color-link\s+(\S*)\s+"(.*)"/;
 const INCLUDE = /include\s+"(.*)"/;
 
@@ -47,10 +36,11 @@ export class Colorscheme {
       if (include) {
         const includeName = include[1];
         if (!parsed.has(includeName)) {
-          const child = new Colorscheme(this.runtime);
-          await child.load(includeName, parsed);
-          for (const [key, value] of child.styles) styles.set(key, value);
-          if (child.styles.has("default")) this.defaultStyle = child.styles.get("default");
+          const file = this.runtime.find(0, includeName);
+          if (!file) throw new Error(`${includeName} is not a valid colorscheme`);
+          parsed.add(includeName);
+          const includedStyles = await this.parse(includeName, await file.text(), parsed);
+          for (const [key, value] of includedStyles) styles.set(key, value);
         }
         continue;
       }
@@ -76,7 +66,7 @@ export class Colorscheme {
         if (this.styles.has(cur)) style = this.styles.get(cur);
       }
     }
-    return style ?? BUILTIN_GROUPS[group] ?? stringToStyle(group, this.defaultStyle);
+    return style ?? stringToStyle(group, this.defaultStyle);
   }
 }
 
@@ -87,10 +77,10 @@ export function stringToStyle(input, base = DEFAULT_STYLE) {
   return {
     fg: stringToColor(fgRaw.trim(), base.fg),
     bg: stringToColor(bgRaw.trim(), base.bg),
-    bold: text.includes("bold"),
-    italic: text.includes("italic"),
-    reverse: text.includes("reverse"),
-    underline: text.includes("underline"),
+    bold: base.bold || text.includes("bold"),
+    italic: base.italic || text.includes("italic"),
+    reverse: base.reverse || text.includes("reverse"),
+    underline: base.underline || text.includes("underline"),
   };
 }
 

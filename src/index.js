@@ -101,7 +101,11 @@ const DEFAULT_SETTINGS = {
   fileformat: process.platform === "win32" ? "dos" : "unix",
   "comment.type": "",
   commenttype: "",
-  trailingws: false,
+  hltrailingws: false,
+  hltaberrors: false,
+  colorcolumn: 0,
+  showchars: "",
+  indentchar: " ",
 };
 
 const LONG_LINE_REHIGHLIGHT_LIMIT = 300;
@@ -647,7 +651,11 @@ class BufferModel {
       reload: DEFAULT_SETTINGS.reload,
       eofnewline: DEFAULT_SETTINGS.eofnewline,
       fileformat: this.fileformat,
-      trailingws: DEFAULT_SETTINGS.trailingws,
+      hltrailingws: DEFAULT_SETTINGS.hltrailingws,
+      hltaberrors: DEFAULT_SETTINGS.hltaberrors,
+      colorcolumn: DEFAULT_SETTINGS.colorcolumn,
+      showchars: DEFAULT_SETTINGS.showchars,
+      indentchar: DEFAULT_SETTINGS.indentchar,
       encoding: this.encoding,
       readonly,
     };
@@ -1879,7 +1887,9 @@ class App {
     const ft = (buf?.filetype && buf.filetype !== "unknown") ? buf.filetype : "?";
     const fmt = buf?.fileformat ?? "unix";
     const enc = buf?.encoding ?? "utf-8";
-    const baseStatus = { ...defaultStyle, reverse: true };
+    const baseStatus = this.context.colorscheme?.styles?.has("statusline")
+      ? this.context.colorscheme.get("statusline")
+      : { ...defaultStyle, reverse: true };
     const redStatus = { ...baseStatus, fg: "red" };
     // Fill entire row with base style first
     putText(this.screen, 0, statusRow, " ".repeat(this.cols), baseStatus, this.cols);
@@ -2010,8 +2020,9 @@ class App {
   }
 
   renderMessageRow(defaultStyle, row, message) {
-    const statusStyle = this.context.colorscheme?.get("statusline") ?? { ...defaultStyle, reverse: true };
-    const style = { ...statusStyle, reverse: false };
+    const style = this.context.colorscheme?.styles?.has("message")
+      ? this.context.colorscheme.get("message")
+      : defaultStyle;
     putText(this.screen, 0, row, " ".repeat(this.cols), style, this.cols);
     this._messageRowY = row;
     this._messageRowClickZone = null;
@@ -2041,15 +2052,15 @@ class App {
   }
 
   renderSuggestions(defaultStyle, row, suggestions, curIdx) {
-    const suggestionStyle = this.context.colorscheme?.get("statusline.suggestions")
-      ?? this.context.colorscheme?.get("statusline")
-      ?? defaultStyle;
-    const baseStyle = { ...suggestionStyle, reverse: false };
+    const cs = this.context.colorscheme;
+    const baseStyle = cs?.styles?.has("statusline.suggestions")
+      ? cs.get("statusline.suggestions")
+      : cs?.styles?.has("statusline")
+        ? cs.get("statusline")
+        : { ...defaultStyle, reverse: true };
     const selStyle = {
       ...baseStyle,
-      fg: baseStyle.bg === "default" ? "black" : baseStyle.bg,
-      bg: baseStyle.fg === "default" ? "brightwhite" : baseStyle.fg,
-      reverse: false,
+      reverse: true,
     };
 
     // Compute each item's position in the virtual (pre-scroll) space.
@@ -2172,9 +2183,16 @@ class App {
     const softwrap = buf.Settings?.softwrap ?? false;
     const wordwrap = softwrap && (buf.Settings?.wordwrap ?? false);
     const tabsize = buf.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
-    const gutterStyle = { ...defaultStyle, fg: "brightblack" };
-    const dirtyGutterStyle = { ...gutterStyle, fg: "red" };
     const isActivePane = pane === this.tab.activePane;
+    const gutterStyle = this.context.colorscheme?.styles?.has("line-number")
+      ? this.context.colorscheme.get("line-number")
+      : defaultStyle;
+    const cursorlineOn = buf.Settings?.cursorline ?? DEFAULT_SETTINGS.cursorline;
+    const csHasCurNum = this.context.colorscheme?.styles?.has("current-line-number");
+    const curNumStyle = !csHasCurNum
+      ? defaultStyle
+      : (cursorlineOn ? this.context.colorscheme.get("current-line-number") : gutterStyle);
+    const dirtyGutterStyle = { ...gutterStyle, fg: "red" };
     const useCursorline = (buf.Settings?.cursorline ?? DEFAULT_SETTINGS.cursorline) && isActivePane;
     const clBg = (useCursorline && this.context.colorscheme?.styles?.has("cursor-line"))
       ? (this.context.colorscheme.get("cursor-line")?.fg ?? null)
@@ -2187,12 +2205,12 @@ class App {
     const diffCol   = (buf.Settings?.diffgutter ?? false) ? 1 : 0;
     const lineNumW  = gutterW - msgW - diffCol;
     const cs = this.context.colorscheme;
-    const diffAddStyle = cs?.get("diff-added")    ?? { ...defaultStyle, fg: "green" };
-    const diffModStyle = cs?.get("diff-modified") ?? { ...defaultStyle, fg: "yellow" };
-    const diffDelStyle = cs?.get("diff-deleted")  ?? { ...defaultStyle, fg: "red" };
-    const msgInfoStyle  = cs?.get("gutter-info")    ?? { ...defaultStyle, fg: "cyan" };
-    const msgWarnStyle  = cs?.get("gutter-warning") ?? { ...defaultStyle, fg: "yellow" };
-    const msgErrStyle   = cs?.get("gutter-error")   ?? { ...defaultStyle, fg: "red" };
+    const diffAddStyle = cs?.styles?.has("diff-added") ? cs.get("diff-added") : null;
+    const diffModStyle = cs?.styles?.has("diff-modified") ? cs.get("diff-modified") : null;
+    const diffDelStyle = cs?.styles?.has("diff-deleted") ? cs.get("diff-deleted") : null;
+    const msgInfoStyle = cs?.styles?.has("gutter-info") ? cs.get("gutter-info") : defaultStyle;
+    const msgWarnStyle = cs?.styles?.has("gutter-warning") ? cs.get("gutter-warning") : defaultStyle;
+    const msgErrStyle = cs?.styles?.has("gutter-error") ? cs.get("gutter-error") : defaultStyle;
 
     const renderGutter = (lineNo, row, screenRow, subRow = 0) => {
       // Message indicator: 2 cols, '> ' with kind-based style (Go: drawGutter)
@@ -2209,19 +2227,22 @@ class App {
         }
         putText(this.screen, pane.x, screenRow, msgCh + " ", msgSt, 2);
       }
+      const isCurrentLine = isActivePane && !pane.selection && lineNo === buf.cursor.y;
+      const lineStyle = isCurrentLine ? curNumStyle : gutterStyle;
       if (diffCol > 0) {
         const m = diffMarks?.[lineNo] ?? 0;
-        const [ch, st] = m === 1 ? ["▌", diffAddStyle]
-                       : m === 2 ? ["▌", diffModStyle]
-                       : m === 3 ? ["▔", diffDelStyle]
-                       : [" ", gutterStyle];
+        const [ch, colorStyle] = m === 1 ? ["▌", diffAddStyle]
+                              : m === 2 ? ["▌", diffModStyle]
+                              : m === 3 ? ["▔", diffDelStyle]
+                              : [" ", null];
+        const st = colorStyle ? { ...lineStyle, fg: colorStyle.fg } : lineStyle;
         putText(this.screen, pane.x + msgW, screenRow, subRow === 0 ? ch : " ", st, 1);
       }
       if (lineNumW > 0) {
         const prefix = subRow === 0
           ? lineNumberText(buf, lineNo, row, lineNumW)
           : visualLineNumberText(subRow, lineNumW);
-        putText(this.screen, pane.x + msgW + diffCol, screenRow, prefix, isDirtyLongLine(buf, lineNo) ? dirtyGutterStyle : gutterStyle, lineNumW);
+        putText(this.screen, pane.x + msgW + diffCol, screenRow, prefix, isDirtyLongLine(buf, lineNo) ? dirtyGutterStyle : lineStyle, lineNumW);
       }
     };
 
@@ -2305,7 +2326,11 @@ class App {
 
   renderDividers(node, defaultStyle) {
     if (node instanceof Pane) return;
-    const divStyle = { ...defaultStyle, fg: "brightblack" };
+    const divReverse = this.context.config?.globalSettings?.divreverse ?? true;
+    const baseDiv = this.context.colorscheme?.styles?.has("divider")
+      ? this.context.colorscheme.get("divider")
+      : defaultStyle;
+    const divStyle = divReverse ? { ...baseDiv, reverse: true } : baseDiv;
     for (let i = 0; i < node.children.length - 1; i++) {
       const child = node.children[i];
       if (node.dir === "h") {
@@ -2322,21 +2347,37 @@ class App {
   }
 
   renderTabbar(defaultStyle) {
-    const tabBarStyle = this.context.colorscheme?.get("tabbar") ?? { ...defaultStyle, reverse: true };
-    const activeStyle = this.context.colorscheme?.get("tabbar.active") ?? { ...tabBarStyle, bold: true };
+    const cs = this.context.colorscheme;
+    const gs = this.context.config?.globalSettings;
+    const tabReverse = gs?.tabreverse ?? true;
+    const tabHighlight = gs?.tabhighlight ?? false;
+    const tabCharReverse = (tabReverse || tabHighlight) && !(tabReverse && tabHighlight);
+
+    const stylesFor = (reverse) => {
+      const base = cs?.styles?.has("tabbar")
+        ? cs.get("tabbar")
+        : { ...defaultStyle, reverse };
+      const active = cs?.styles?.has("tabbar.active")
+        ? cs.get("tabbar.active")
+        : base;
+      return [base, active];
+    };
+    const [sepStyle] = stylesFor(tabReverse);
+    const [charBase, charActive] = stylesFor(tabCharReverse);
+
     let x = 0;
     for (let i = 0; i < this.tabs.length && x < this.cols; i++) {
       const name = this.tabs[i].name || "No name";
       const isActive = i === this.activeTabIdx;
       const label = isActive ? `[${name}]` : ` ${name} `;
-      const style = isActive ? activeStyle : tabBarStyle;
+      const style = isActive ? charActive : charBase;
       const start = x;
       x = putText(this.screen, x, 0, label, style, this.cols - x);
       this.tabRects.push({ index: i, start, end: x });
       if (i < this.tabs.length - 1 && x < this.cols)
-        x = putText(this.screen, x, 0, "  ", tabBarStyle, this.cols - x);
+        x = putText(this.screen, x, 0, "  ", sepStyle, this.cols - x);
     }
-    if (x < this.cols) putText(this.screen, x, 0, " ".repeat(this.cols - x), tabBarStyle, this.cols - x);
+    if (x < this.cols) putText(this.screen, x, 0, " ".repeat(this.cols - x), sepStyle, this.cols - x);
   }
 
   updateScrollForPane(pane) {
@@ -6047,22 +6088,75 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
   // Go: cursor-line bg is skipped when a syntax style already has a non-default background (preservebg)
   const defBg = colorscheme?.defaultStyle?.bg ?? "default";
 
-  const showTrailingWs = buf.Settings?.trailingws ?? false;
+  const showTrailingWs = buf.Settings?.hltrailingws ?? false;
   let trailingWsIdx = raw.length;
   if (showTrailingWs) {
     let k = raw.length - 1;
     while (k >= 0 && (raw[k] === " " || raw[k] === "\t")) k--;
     trailingWsIdx = k + 1;
   }
-  const trailingWsStyle = showTrailingWs
-    ? (colorscheme?.get("trailingws") ?? { fg: "red", underline: true })
+  const trailingWsColor = showTrailingWs && colorscheme?.styles?.has("trailingws")
+    ? colorscheme.get("trailingws")?.fg
     : null;
+
+  // showchars parsing (Go bufwindow.go:455-476)
+  const indentchar = buf.Settings?.indentchar ?? " ";
+  let spacechars = " ";
+  let tabchars = indentchar;
+  let indentspacechars = "";
+  let indenttabchars = "";
+  for (const entry of String(buf.Settings?.showchars ?? "").split(",")) {
+    const eq = entry.indexOf("=");
+    if (eq < 0) continue;
+    const key = entry.slice(0, eq);
+    const val = entry.slice(eq + 1);
+    if (key === "space") spacechars = val;
+    else if (key === "tab") tabchars = val;
+    else if (key === "ispace") indentspacechars = val;
+    else if (key === "itab") indenttabchars = val;
+  }
+  // leadingwsEnd: index of first non-whitespace char (raw code-unit index)
+  let leadingwsEnd = 0;
+  while (leadingwsEnd < raw.length && (raw[leadingwsEnd] === " " || raw[leadingwsEnd] === "\t")) leadingwsEnd++;
+
+  const hltaberrors = buf.Settings?.hltaberrors ?? false;
+  const tabstospaces = buf.Settings?.tabstospaces ?? false;
+  const tabErrorFg = hltaberrors && colorscheme?.styles?.has("tab-error")
+    ? colorscheme.get("tab-error")?.fg
+    : null;
+  const indentCharFg = colorscheme?.styles?.has("indent-char")
+    ? colorscheme.get("indent-char")?.fg
+    : null;
+  const colorcolumn = Number(buf.Settings?.colorcolumn ?? 0) | 0;
+  const colorColumnBg = colorcolumn > 0 && colorscheme?.styles?.has("color-column")
+    ? colorscheme.get("color-column")?.fg
+    : null;
+  const tabsize = buf.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
+
+  // scrollVisualCol: visual column of raw[0..scrollX). Uses displayWidth (tab = full
+  // tabsize, not aligned-to-boundary) to stay consistent with cursor/scroll math.
+  const scrollVisualCol = displayWidth(raw.slice(0, scrollX));
+
+  // Linter messages overlapping this line (Go bufwindow.go:662-668)
+  const lineMessages = (buf.Messages ?? []).filter((m) => {
+    const sy = m.Start?.Y ?? 0, ey = m.End?.Y ?? 0;
+    return sy <= lineNo && ey >= lineNo;
+  });
+  const inMessageAt = (charIdx) => {
+    for (const m of lineMessages) {
+      const sY = m.Start?.Y ?? 0, sX = m.Start?.X ?? 0;
+      const eY = m.End?.Y ?? 0, eX = m.End?.X ?? 0;
+      const ge = lineNo > sY || (lineNo === sY && charIdx >= sX);
+      const lt = lineNo < eY || (lineNo === eY && charIdx < eX);
+      if (ge && lt) return true;
+    }
+    return false;
+  };
 
   let changeIndex = 0;
   let searchIdx = 0;
   let i = scrollX;
   while (i < raw.length && width < maxWidth) {
-    const cp = raw.codePointAt(i);
     const unit = displayUnitAt(raw, i);
     const ch = unit.text;
     const charLen = unit.length;
@@ -6071,16 +6165,30 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     while (changeIndex + 1 < changes.length && i >= changes[changeIndex + 1][0]) changeIndex++;
     const group = changes[changeIndex]?.[1] ?? "default";
     const syntaxStyle = colorscheme?.get(group) ?? colorscheme?.defaultStyle ?? {};
-    const preservebg = cursorLineBg != null && syntaxStyle.bg !== undefined && syntaxStyle.bg !== defBg;
-    const baseStyle = (cursorLineBg && !preservebg) ? { ...syntaxStyle, bg: cursorLineBg } : syntaxStyle;
+    let preservebg = syntaxStyle.bg !== undefined && syntaxStyle.bg !== defBg;
+    let baseStyle = (cursorLineBg && !preservebg) ? { ...syntaxStyle, bg: cursorLineBg } : syntaxStyle;
     while (searchIdx < searchRanges.length && searchRanges[searchIdx][1] <= i) searchIdx++;
     const inSearch = searchIdx < searchRanges.length && i >= searchRanges[searchIdx][0] && i < searchRanges[searchIdx][1];
     const selected = isSelected(selection, lineNo, i, i + charLen);
     const braceMatched = braceMatches?.has(String(lineNo) + ":" + String(i));
-    let style = (showTrailingWs && i >= trailingWsIdx) ? trailingWsStyle : baseStyle;
+
+    // tab-error in leading whitespace
+    let style = baseStyle;
+    const inLeading = i < leadingwsEnd;
+    if (tabErrorFg != null && inLeading) {
+      if ((tabstospaces && ch === "\t") || (!tabstospaces && ch === " ")) {
+        style = { ...style, bg: tabErrorFg };
+        preservebg = true;
+      }
+    }
+    if (trailingWsColor != null && i >= trailingWsIdx) {
+      style = { ...style, bg: trailingWsColor };
+      preservebg = true;
+    }
     if (inSearch) {
       const searchStyle = colorscheme?.styles?.has("hlsearch") ? colorscheme.get("hlsearch") : null;
-      style = searchStyle ?? { ...baseStyle, reverse: !baseStyle.reverse };
+      style = searchStyle ?? { ...(colorscheme?.defaultStyle ?? {}), reverse: true };
+      if ((style.bg ?? "default") !== defBg) preservebg = true;
     }
     if (braceMatched) {
       if ((buf.Settings?.matchbracestyle ?? DEFAULT_SETTINGS.matchbracestyle) === "highlight") {
@@ -6091,22 +6199,73 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
       }
     }
     if (selected) {
-      style = { ...style, reverse: !style.reverse };
+      const selectionStyle = colorscheme?.styles?.has("selection") ? colorscheme.get("selection") : null;
+      style = selectionStyle ?? { ...(colorscheme?.defaultStyle ?? {}), reverse: true };
     }
+    if (lineMessages.length > 0 && inMessageAt(i)) {
+      style = { ...style, underline: true };
+    }
+
+    // Visualize whitespace
+    let displayCh = ch;
+    let useIndentCharFg = false;
+    if (ch === " ") {
+      // Go bufwindow.go:554-559: ispace only kicks in at tabsize boundaries (indent guide).
+      const visualCol = scrollVisualCol + width;
+      const useIspace = inLeading && indentspacechars && (visualCol % tabsize === 0);
+      const candidate = useIspace ? indentspacechars : spacechars;
+      if (candidate && candidate !== " ") {
+        displayCh = candidate[0] ?? " ";
+        useIndentCharFg = true;
+      }
+    } else if (ch === "\t") {
+      const candidate = (inLeading && indenttabchars) ? indenttabchars : tabchars;
+      if (candidate && candidate !== " ") {
+        displayCh = candidate[0] ?? " ";
+        useIndentCharFg = true;
+      } else {
+        displayCh = " ";
+      }
+    }
+    if (useIndentCharFg && indentCharFg != null) {
+      style = { ...style, fg: indentCharFg };
+    }
+
+    const ccAt = (visualCol) => {
+      if (colorColumnBg == null || preservebg) return null;
+      return visualCol === colorcolumn ? colorColumnBg : null;
+    };
+
     if (ch === "\t") {
-      const spaces = Math.min(DEFAULT_SETTINGS.tabsize, maxWidth - width);
-      for (let j = 0; j < spaces; j++) cells.push({ ch: " ", style });
-      width += spaces;
+      const spaces = Math.min(tabsize, maxWidth - width);
+      for (let j = 0; j < spaces; j++) {
+        const visualCol = scrollVisualCol + width;
+        const cellCh = j === 0 ? displayCh : " ";
+        const ccBg = ccAt(visualCol);
+        const cellStyle = ccBg != null ? { ...style, bg: ccBg } : style;
+        cells.push({ ch: cellCh, style: cellStyle });
+        width++;
+      }
     } else if (w > 0 && width + w <= maxWidth) {
-      cells.push({ ch, style, width: w });
+      const visualCol = scrollVisualCol + width;
+      const ccBg = ccAt(visualCol);
+      const cellStyle = ccBg != null ? { ...style, bg: ccBg } : style;
+      cells.push({ ch: displayCh, style: cellStyle, width: w });
       width += w;
     }
     i += charLen;
   }
-  // Fill rest of line with cursorline background
-  if (cursorLineBg) {
-    const padStyle = { ...(colorscheme?.defaultStyle ?? {}), bg: cursorLineBg };
-    while (width < maxWidth) { cells.push({ ch: " ", style: padStyle }); width++; }
+  // Trailing fill: cursor-line bg and color-column always apply (Go bufwindow.go:807-826)
+  while (width < maxWidth) {
+    const visualCol = scrollVisualCol + width;
+    let padStyle = cursorLineBg
+      ? { ...(colorscheme?.defaultStyle ?? {}), bg: cursorLineBg }
+      : (colorscheme?.defaultStyle ?? {});
+    if (colorColumnBg != null && visualCol === colorcolumn) {
+      padStyle = { ...padStyle, bg: colorColumnBg };
+    }
+    cells.push({ ch: " ", style: padStyle });
+    width++;
   }
   return cells;
 }
