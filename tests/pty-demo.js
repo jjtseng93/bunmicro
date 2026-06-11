@@ -187,7 +187,7 @@ async function runDemo({ file2, unknownFile, redetectedFile, crlfShell, themeCou
   });
 
   await action("select fixed theme: dracula-tc", async () => {
-    await command("theme solarized", 1000);
+    await command("theme darcula", 1000);
   });
 
   await action("find alpha", async () => {
@@ -417,7 +417,7 @@ async function hello(){
   const redetected = 'yes';
   console.log(
     Object.getOwnPropertyNames(
-      redetected.__proto__
+    	  redetected.__proto__
     )
   );
 }
