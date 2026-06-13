@@ -23,6 +23,8 @@ import { platformId, run as runCommand, runSync, fetchHttpBytes, detectHttpBacke
 import { shellSplit } from "./shell/shell.js";
 import { styleToAnsi } from "./display/ansi-style.js";
 import { encodeBinaryToBuffer, decodeBinaryBytes } from "./buffer/fixed3-codec.js";
+import { writeBackup, removeBackup, applyBackup } from "./buffer/backup.js";
+import { createInterface } from "node:readline/promises";
 
 import pkg from "../package.json" with { type: "json" };
 
@@ -92,6 +94,9 @@ const DEFAULT_SETTINGS = {
   matchbraceleft: true,
   matchbracestyle: "underline",
   savecursor: false,
+  backup: true,
+  backupdir: "",
+  permbackup: false,
   softwrap: false,
   wordwrap: false,
   pageoverlap: 2,
@@ -117,6 +122,20 @@ let startupHighlightProgress = null;
 
 function write(data) {
   process.stdout.write(data);
+}
+
+// Pre-TUI terminal prompt — stdin must still be in line (cooked) mode.
+// Accepts an optional input stream so the TUI path can pass its own tty fd.
+async function termPromptLine(msg, input = process.stdin) {
+  const rl = createInterface({ input, output: process.stdout });
+  try {
+    console.log(Bun.markdown.ansi(msg))
+    return await rl.question("> ");
+  } catch {
+    return "";
+  } finally {
+    rl.close();
+  }
 }
 
 function sgr(...codes) {
@@ -611,7 +630,15 @@ class BufferModel {
     if (this.lines.length === 0) this.lines = [""];
     this.cursor = { x: 0, y: 0 };
     this.scroll = { x: 0, y: 0, row: 0 };
-    this.modified = false;
+    this._modified = false;
+    this._backupRequested = false;
+    this._backupRevision = 0;
+    Object.defineProperty(this, "modified", {
+      configurable: true,
+      enumerable: true,
+      get: () => this._modified,
+      set: (value) => this.setModified(value),
+    });
     this.readonly = readonly;
     this.modTimeMs = modTimeMs;
     this.reloadDisabled = false;
@@ -644,6 +671,9 @@ class BufferModel {
       matchbraceleft: DEFAULT_SETTINGS.matchbraceleft,
       matchbracestyle: DEFAULT_SETTINGS.matchbracestyle,
       savecursor: DEFAULT_SETTINGS.savecursor,
+      backup: DEFAULT_SETTINGS.backup,
+      backupdir: DEFAULT_SETTINGS.backupdir,
+      permbackup: DEFAULT_SETTINGS.permbackup,
       softwrap: DEFAULT_SETTINGS.softwrap,
       wordwrap: DEFAULT_SETTINGS.wordwrap,
       pageoverlap: DEFAULT_SETTINGS.pageoverlap,
@@ -674,6 +704,19 @@ class BufferModel {
     if (command.searchRegex) this.search(command.searchRegex, command.searchAfterStart);
   }
 
+  setModified(value = true) {
+    const next = Boolean(value);
+    const prev = this._modified;
+    this._modified = next;
+    if (next) {
+      this._backupRequested = true;
+      this._backupRevision++;
+    } else {
+      this._backupRequested = false;
+      if (prev && this._configDir) removeBackup(this, this._configDir);
+    }
+  }
+
   static async fromFile(path, command, context = {}) {
     let text = "";
     let readonly = false;
@@ -689,6 +732,7 @@ class BufferModel {
       encoding = decoded.encoding;
     }
     const buffer = new BufferModel({ path, text, command, readonly, modTimeMs, encoding });
+    buffer._configDir = context?.config?.configDir ?? null;
     attachSyntax(buffer, context, path, text);
     return buffer;
   }
@@ -1101,39 +1145,74 @@ class BufferModel {
   async save(path = this.path) {
     if (!path) throw new Error("No filename");
     const detectSyntaxAfterSave = this.filetype === "unknown";
+    const oldPath = this.AbsPath || this.path;
+    const targetPath = resolve(path);
     let text = this.lines.join("\n");
+    if (this._configDir) {
+      if (this._backupWritePromise) {
+        try { await this._backupWritePromise; } catch {}
+      }
+      const backupRevision = this._backupRevision;
+      const job = writeBackup(this, this._configDir, targetPath, { force: true });
+      this._backupWritePromise = job;
+      try {
+        await job;
+      } finally {
+        if (this._backupWritePromise === job) this._backupWritePromise = null;
+      }
+      if (this._backupRevision === backupRevision) this._backupRequested = false;
+      this._forceKeepBackup = true;
+    }
     if (this.encoding === "hex3") {
-      await Bun.write(path, decodeBinaryBytes(Buffer.from(text, "latin1")));
-      this.path = path;
-      this.Path = path;
-      this.AbsPath = path;
-      this.name = basename(path);
+      try {
+        await Bun.write(targetPath, decodeBinaryBytes(Buffer.from(text, "latin1")));
+      } finally {
+        this._forceKeepBackup = false;
+      }
+      this.path = targetPath;
+      this.Path = targetPath;
+      this.AbsPath = targetPath;
+      this.name = basename(targetPath);
       this.updateModTime();
       this.readonly = !canWritePath(path);
       this.Settings.readonly = this.readonly;
       this.Type.Readonly = this.readonly;
       this._savedSerial = this._undoSerial ?? 0;
       this.modified = false;
-      this.message = `Saved ${path}`;
-      if (detectSyntaxAfterSave && this._syntaxContext) attachSyntax(this, this._syntaxContext, path, text);
+      this.message = `Saved ${targetPath}`;
+      if (this._configDir && oldPath !== targetPath) removeBackup(this, this._configDir, oldPath);
+      this._updateOpenBufferPath(oldPath, targetPath);
+      if (detectSyntaxAfterSave && this._syntaxContext) attachSyntax(this, this._syntaxContext, targetPath, text);
       return;
     }
     if ((this.Settings.eofnewline ?? DEFAULT_SETTINGS.eofnewline) && !text.endsWith("\n")) text += "\n";
-    await Bun.write(path, encodeBufferTextForFile(text, this.Settings.fileformat ?? this.fileformat));
+    try {
+      await Bun.write(targetPath, encodeBufferTextForFile(text, this.Settings.fileformat ?? this.fileformat));
+    } finally {
+      this._forceKeepBackup = false;
+    }
     this.encoding = "utf-8";
     this.Settings.encoding = "utf-8";
-    this.path = path;
-    this.Path = path;
-    this.AbsPath = path;
-    this.name = basename(path);
+    this.path = targetPath;
+    this.Path = targetPath;
+    this.AbsPath = targetPath;
+    this.name = basename(targetPath);
     this.updateModTime();
     this.readonly = !canWritePath(path);
     this.Settings.readonly = this.readonly;
     this.Type.Readonly = this.readonly;
     this._savedSerial = this._undoSerial ?? 0;
     this.modified = false;
-    this.message = `Saved ${path}`;
-    if (detectSyntaxAfterSave && this._syntaxContext) attachSyntax(this, this._syntaxContext, path, text);
+    this.message = `Saved ${targetPath}`;
+    if (this._configDir && oldPath !== targetPath) removeBackup(this, this._configDir, oldPath);
+    this._updateOpenBufferPath(oldPath, targetPath);
+    if (detectSyntaxAfterSave && this._syntaxContext) attachSyntax(this, this._syntaxContext, targetPath, text);
+  }
+
+  _updateOpenBufferPath(oldPath, newPath) {
+    if (!this._openBufferMap) return;
+    if (oldPath && this._openBufferMap.get(oldPath) === this) this._openBufferMap.delete(oldPath);
+    this._openBufferMap.set(newPath, this);
   }
 
   // --- Autocomplete (BufferComplete) ---
@@ -1700,11 +1779,15 @@ class App {
   get buffer() { return this.pane?.buffer ?? null; }
   // backward-compat for the few spots that still use this.active / this.buffers
   get active() { return this.activeTabIdx; }
-  get buffers() { return this.tabs.map(t => t.buffer).filter(Boolean); }
+  get buffers() {
+    return [...new Set(this.tabs.flatMap((tab) =>
+      tab.panes().flatMap((pane) => [pane.buffer, pane.prevBuffer]).filter(Boolean)
+    ))];
+  }
 
   paneForBuffer(buffer) {
     for (const tab of this.tabs) {
-      const pane = tab.panes().find((p) => p.buffer === buffer);
+      const pane = tab.panes().find((p) => p.buffer === buffer || p.prevBuffer === buffer);
       if (pane) return pane;
     }
     return null;
@@ -1755,6 +1838,45 @@ class App {
     });
     process.on("SIGINT", () => {}); // Ctrl+C is handled as copy in handleEvent
     this.screen.init();
+    // Update backup prompt to screen-aware version now that TUI is running.
+    if (this.context._termPrompt) {
+      this.context._termPrompt = async (msg) => {
+        const tty = this._ttyStream ?? process.stdin;
+        if (this._inputHandler) tty.removeListener("data", this._inputHandler);
+        tty.setRawMode?.(false);
+        this.screen.fini();
+        process.stdout.write("\n");
+        const answer = await termPromptLine(msg, tty);
+        this.screen.previous = null;
+        this.screen.init();
+        tty.setRawMode?.(true);
+        tty.resume(); // rl.close() pauses the stream; resume so data events fire again
+        if (this._inputHandler) tty.on("data", this._inputHandler);
+        return answer;
+      };
+    }
+    // Process buffers requested by edits. A successful backup is not repeated
+    // until the buffer is modified again.
+    const configDir = this.context?.config?.configDir;
+    if (configDir) {
+      this._backupTimer = setInterval(async () => {
+        for (const buf of this.buffers) {
+          if (buf._backupRequested && buf.modified && buf.path && buf.type === "default" &&
+              (buf.Settings?.backup ?? DEFAULT_SETTINGS.backup) && !buf._backupWritePromise) {
+            const revision = buf._backupRevision;
+            const job = writeBackup(buf, configDir);
+            buf._backupWritePromise = job;
+            try {
+              if (await job) {
+                if (buf._backupRevision === revision) buf._backupRequested = false;
+              }
+            } catch {} finally {
+              if (buf._backupWritePromise === job) buf._backupWritePromise = null;
+            }
+          }
+        }
+      }, 10_000);
+    }
     startupHighlightProgress = new StartupHighlightProgress(this);
     try {
       this.render();
@@ -1774,6 +1896,8 @@ class App {
 
   async stop(code = 0) {
     this.running = false;
+    if (this._backupTimer) { clearInterval(this._backupTimer); this._backupTimer = null; }
+    await Promise.allSettled(this.buffers.map((buf) => buf._backupWritePromise).filter(Boolean));
     for (const tab of this.tabs)
       for (const p of tab.panes())
         if (p.type === "term") p.terminal?.close();
@@ -1789,6 +1913,10 @@ class App {
         if (buf.path) this.context.cursorStates[buf.path] = { ...buf.cursor };
       }
       try { await saveCursorStates(this.context.config.configDir, this.context.cursorStates); } catch {}
+    }
+    const configDir = this.context?.config?.configDir;
+    if (configDir) {
+      for (const buf of this.buffers) removeBackup(buf, configDir);
     }
     process.exit(code);
   }
@@ -3859,9 +3987,11 @@ class App {
   }
   async openInPane(path) {
     try {
+      const previous = this.pane.buffer;
       const buffer = await loadBufferForPath(path, this.context);
       this.pane.buffer = buffer;
       this.pane.selection = null;
+      if (previous !== buffer) this._closeBufferIfUnused(previous);
       await this.context.plugins?.run("onBufferOpen", buffer);
       await this.context.jsPlugins?.run("onBufferOpen", buffer);
     } catch (error) {
@@ -3873,8 +4003,10 @@ class App {
     try {
       const buffer = await loadBufferForPath(path, this.context);
       if (isEmptyUntitledBuffer(this.buffer)) {
+        const previous = this.pane.buffer;
         this.pane.buffer = buffer;
         this.pane.selection = null;
+        if (previous !== buffer) this._closeBufferIfUnused(previous);
       } else {
         const tab = new Tab(new Pane(buffer));
         this.tabs.push(tab);
@@ -4057,8 +4189,10 @@ class App {
 
   closePane(pane) {
     pane.terminal?.close();
+    const closingBuffers = [...new Set([pane.buffer, pane.prevBuffer].filter(Boolean))];
     const tab = this.tab;
     tab.removePane(pane);
+    for (const buffer of closingBuffers) this._closeBufferIfUnused(buffer);
     if (!tab.root) {
       // Tab is empty — close it
       if (this.tabs.length <= 1) { this.stop(0); return; }
@@ -4073,16 +4207,26 @@ class App {
       await this.stop(0);
       return;
     }
+    const closingBuffers = [...new Set(this.tab.panes().flatMap((pane) => [pane.buffer, pane.prevBuffer]).filter(Boolean))];
     const closing = this.buffer;
     this.tabs.splice(this.activeTabIdx, 1);
     this.activeTabIdx = Math.min(this.activeTabIdx, this.tabs.length - 1);
     this.message = "";
+    for (const buffer of closingBuffers) this._closeBufferIfUnused(buffer);
     if (this.context.plugins && this.buffer) this.context.plugins.curPaneAdapter = makePaneAdapter(this.buffer, this);
     await this.context.plugins?.run("onSetActive", makePaneAdapter(this.buffer, this));
     await this.context.plugins?.run("onBufferClose", closing);
     if (this.buffer) this.context.jsPlugins?.run("onSetActive", makePaneAdapter(this.buffer, this));
     await this.context.jsPlugins?.run("onBufferClose", closing);
     this.render();
+  }
+
+  _closeBufferIfUnused(buffer) {
+    if (!buffer || this.paneForBuffer(buffer)) return;
+    const configDir = this.context?.config?.configDir;
+    if (configDir) removeBackup(buffer, configDir);
+    const map = this.context?._openBuffers;
+    if (map && map.get(buffer.AbsPath) === buffer) map.delete(buffer.AbsPath);
   }
 
   openCommandMode(initial = "") {
@@ -4442,25 +4586,27 @@ class App {
       case "vsplit": {
         let newBuf;
         if (cmdArgs.length > 0) {
-          try { newBuf = await BufferModel.fromFile(resolve(expandHome(cmdArgs[0])), {}, this.context); }
+          try { newBuf = await loadBufferForPath(resolve(expandHome(cmdArgs[0])), this.context); }
           catch (err) { this.message = err.message; break; }
         } else {
           newBuf = new BufferModel({ command: {} });
           attachSyntax(newBuf, this.context, "", "");
         }
         this.tab.split(this.pane, new Pane(newBuf), "h");
+        this.render();
         break;
       }
       case "hsplit": {
         let newBuf;
         if (cmdArgs.length > 0) {
-          try { newBuf = await BufferModel.fromFile(resolve(expandHome(cmdArgs[0])), {}, this.context); }
+          try { newBuf = await loadBufferForPath(resolve(expandHome(cmdArgs[0])), this.context); }
           catch (err) { this.message = err.message; break; }
         } else {
           newBuf = new BufferModel({ command: {} });
           attachSyntax(newBuf, this.context, "", "");
         }
         this.tab.split(this.pane, new Pane(newBuf), "v");
+        this.render();
         break;
       }
       case "term": {
@@ -5731,9 +5877,26 @@ async function loadBufferForPath(pathOrUrl, context, command = {}) {
     encoding = decoded.encoding;
     const urlPath = pathOrUrl.replace(/[?#].*$/, "");
     buffer = new BufferModel({ path: pathOrUrl, text, command, encoding });
+    buffer._configDir = context?.config?.configDir ?? null;
     attachSyntax(buffer, context, urlPath, text);
   } else {
-    buffer = await BufferModel.fromFile(pathOrUrl, command, context);
+    if (!context._openBuffers) context._openBuffers = new Map();
+    const absPath = resolve(pathOrUrl);
+    const existing = context._openBuffers.get(absPath);
+    if (existing) return existing;
+    buffer = await BufferModel.fromFile(absPath, command, context);
+    // Check for crash-recovery backup before returning the buffer.
+    const promptFn = context._termPrompt;
+    if (promptFn && buffer._configDir) {
+      const { recovered, abort } = await applyBackup(buffer, buffer._configDir, promptFn);
+      if (abort) return new BufferModel({ command });
+      if (recovered) {
+        buffer.ensureCursor();
+        attachSyntax(buffer, context, absPath, buffer.lines.join("\n"));
+      }
+    }
+    buffer._openBufferMap = context._openBuffers;
+    context._openBuffers.set(absPath, buffer);
   }
   if (DEFAULT_SETTINGS.savecursor && !commandHasStartupJump(command) && context?.cursorStates?.[pathOrUrl]) {
     const saved = context.cursorStates[pathOrUrl];
@@ -6115,9 +6278,13 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     else if (key === "ispace") indentspacechars = val;
     else if (key === "itab") indenttabchars = val;
   }
-  // leadingwsEnd: index of first non-whitespace char (raw code-unit index)
+  // Only inspect visible leading whitespace. Once horizontally scrolled, the
+  // line start is off-screen and should not make redraw cost depend on it.
   let leadingwsEnd = 0;
-  while (leadingwsEnd < raw.length && (raw[leadingwsEnd] === " " || raw[leadingwsEnd] === "\t")) leadingwsEnd++;
+  if (scrollX === 0) {
+    const visibleEnd = Math.min(raw.length, maxWidth);
+    while (leadingwsEnd < visibleEnd && (raw[leadingwsEnd] === " " || raw[leadingwsEnd] === "\t")) leadingwsEnd++;
+  }
 
   const hltaberrors = buf.Settings?.hltaberrors ?? false;
   const tabstospaces = buf.Settings?.tabstospaces ?? false;
@@ -6133,9 +6300,9 @@ function renderHighlightedCells(buf, lineNo, scrollX, maxWidth, colorscheme, sel
     : null;
   const tabsize = buf.Settings?.tabsize ?? DEFAULT_SETTINGS.tabsize;
 
-  // scrollVisualCol: visual column of raw[0..scrollX). Uses displayWidth (tab = full
-  // tabsize, not aligned-to-boundary) to stay consistent with cursor/scroll math.
-  const scrollVisualCol = displayWidth(raw.slice(0, scrollX));
+  // Keep horizontal rendering bounded to the visible range. Reconstructing
+  // the exact display width before scrollX makes long-line redraws O(scrollX).
+  const scrollVisualCol = scrollX;
 
   // Linter messages overlapping this line (Go bufwindow.go:662-668)
   const lineMessages = (buf.Messages ?? []).filter((m) => {
@@ -6532,6 +6699,8 @@ async function main() {
   if (DEFAULT_SETTINGS.savecursor) {
     context.cursorStates = await loadCursorStates(config.configDir);
   }
+  // Backup prompt available before App starts (stdin still in cooked mode).
+  context._termPrompt = process.stdout.isTTY ? termPromptLine : null;
   loadBuffers.context = context;
   const buffers = await loadBuffers(files.map((file) =>
     isHttpUrl(file) ? file : resolve(file)
