@@ -35,6 +35,16 @@
 - Works like bat ccat glow
 - bunmicro -bat file
 - aliases: --cat --bat --ccat --glow
+## Binary edit by hex3
+- Edit binary files like text files
+- bunmicro libc.so.6
+- Ctrl+E reopen hex3
+- Printable chars stay readable
+  * a => a..
+- Non-printable chars become escapes
+  * \xff => \ff
+- Search & Edit by plain text
+- And simply save by Ctrl+S
 ## Preview color schemes(theme)
 - Ctrl-E theme, then press Tab and use arrow keys to preview
 ## Mouse clicks more useful

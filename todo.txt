@@ -116,7 +116,12 @@ Buffer / editing model
     Done: saving a non-UTF-8-decoded buffer prompts "Save in UTF-8?(y,n)" before converting the buffer to UTF-8 on disk.
     Done: hex3 encoding supports binary edit/open/save paths without UTF-8 conversion prompt.
     Remaining: non-UTF-8 save/encode, rmtrailingws, mkparents, autosu/sucmd, full fileformat behavior parity.
-[ ] Implement backup recovery and permbackup behavior.
+[x] Implement backup recovery and permbackup behavior.
+    - src/buffer/backup.js: writeBackup/removeBackup/applyBackup; path-escaped flat filename in configDir/backups/ (>200 bytes falls back to SHA-256 hash + .resolve sidecar).
+    - Periodic backup timer (10s) in App.start() writes all modified default buffers.
+    - applyBackup called in loadBufferForPath (covers open/vsplit/hsplit/startup) via context._termPrompt; pre-TUI uses readline/promises, in-TUI uses screen fini/init wrapper.
+    - removeBackup called on save, closePane, closeCurrentTab, and stop (all buffers).
+    - backup/backupdir/permbackup settings wired through DEFAULT_SETTINGS → buf.Settings → syncEditorSettings.
 [~] Implement savecursor and saveundo serialization.
     Done: savecursor saves cursor position to configDir/buffers/cursor_state.json on Ctrl-S and on quit; position is restored when re-opening the same file; syncs from Go micro settings.json.
     Done: savecursor restore now vertically centers the viewport on the restored cursor position (deferred via _pendingCenterScroll flag, resolved on first render after layout is computed; handles softwrap/non-softwrap via _ttsScrollToCenter).

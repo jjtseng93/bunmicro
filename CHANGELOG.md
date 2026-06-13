@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.30] - 2026-06-13
+- Fixed binary edit hex3 regression
+  * see readme
+- Added crash backup recovery
+
 ## [0.9.25] - 2026-06-10
 - Fixed colorscheme: aligned with go
 - Added colorcolumn taberror showchars

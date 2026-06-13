@@ -1,6 +1,6 @@
 {
   "name": "bunmicro",
-  "version": "0.9.25",
+  "version": "0.9.29",
   "description": "Bun JavaScript rewrite of the micro editor originally in Golang",
   "type": "module",
   "main": "./src/index.js",
