@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0] - 2026-06-22
+- Changed command -v to Bun.which
+  * for performance improvement
+- Added experimental CDP support
+  * Chrome DevTools Protocol server (Ctrl+E cdp [port])
+  * Allows automation via Playwright or Bun.WebView
+  * --remote-debugging-port=PORT flag to auto-start at launch
+- Fixed Escape action now routes through full input pipeline
+  * Correctly handles terminal pane, TTS, and mark selection
+
 ## [0.9.30] - 2026-06-13
 - Fixed binary edit hex3 regression
   * see readme

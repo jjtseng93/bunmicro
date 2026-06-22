@@ -61,6 +61,19 @@
 - No native bindings
 - No recompilation
 - Just Copy folder -> Run with Bun
+## CDP — Chrome DevTools Protocol (experimental)
+- Control bunmicro like a browser from an external script
+- Start from command prompt: `Ctrl-E cdp` (default port 9222) or `Ctrl-E cdp 9000`
+- Or launch with: `bunmicro --remote-debugging-port=9222 file.txt`
+- Once running, connect with Bun.WebView or Playwright:
+  ```js
+  const view = new Bun.WebView({ backend: { type: "chrome", url: "ws://127.0.0.1:9222" } });
+  await view.navigate("file.txt");
+  await view.type("hello");
+  await view.press("Enter");
+  ```
+- Supports: navigate, type, press, click(x,y), scroll(dx,dy), scrollTo, evaluate, goBack, goForward
+- Full client example: `Ctrl-E help cdp`
 ## Version shows backends
 - bunmicro --version shows http/clipboard/tts backends
 
