@@ -455,10 +455,7 @@ function registerBuiltinActions() {
         if (pane?.buffer?.modified) try { await pane.buffer.save?.(); } catch {}
     await app.stop?.(0);
   });
-  reg("Escape", (app) => {
-    if (app.pane) app.pane.selection = null;
-    if (app.buffer) app.buffer.searchPattern = "";
-  });
+  reg("Escape", (app) => app._dispatchInput?.(new TextEncoder().encode("\x1b")));
 
   // Toggle settings
   reg("ToggleDiffGutter", (app) => {
@@ -768,7 +765,9 @@ export function buildMicroGlobal(jsManager) {
         return async (...args) => {
           const app = getApp();
           if (!app) return;
-          return app.handleCommand(buildCmdString(name, args));
+          const result = await app.handleCommand(buildCmdString(name, args));
+          app.render?.();
+          return result;
         };
       },
     }),
@@ -872,6 +871,7 @@ function _makePaneAPI(buffer, app) {
     EndOfLine:   () => buffer.moveEnd(),
     InsertNewline: () => buffer.newline(),
     InsertTab:   () => buffer.insertTab(),
+    Insert:      (text) => { buffer.pushUndo?.(); buffer.insert(text); app?.render?.(); },
     HandleCommand: (cmd) => app?.handleCommand?.(cmd),
 
     // Run a named action on this pane

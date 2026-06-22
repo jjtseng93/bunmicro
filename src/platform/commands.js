@@ -118,10 +118,7 @@ export async function runBytes(command, options = {}) {
 }
 
 export function hasCommand(name) {
-  if (platformId() === "win32") {
-    return runSync(["where.exe", name], { stdout: "ignore", stderr: "ignore" }).ok;
-  }
-  return runSync(["sh", "-c", `command -v ${shellQuote(name)}`], { stdout: "ignore", stderr: "ignore" }).ok;
+  return Bun.which(name);
 }
 
 export function firstCommand(names) {

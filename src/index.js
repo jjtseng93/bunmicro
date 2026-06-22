@@ -516,6 +516,8 @@ function parseArgs(argv) {
     debug: false,
     profile: false,
     plugin: "",
+    cdpPort: 0,
+    cdpAddress: "",
     settings: new Map(),
   };
   const files = [];
@@ -532,7 +534,15 @@ function parseArgs(argv) {
     else if (arg === "-profile") flags.profile = true;
     else if (arg === "-config-dir") flags.configDir = argv[++i] ?? "";
     else if (arg === "-plugin") flags.plugin = argv[++i] ?? "";
-    else if (arg.startsWith("-") && arg.length > 1 && i + 1 < argv.length) {
+    else if (arg.startsWith("--remote-debugging-port=")) {
+      flags.cdpPort = parseInt(arg.slice("--remote-debugging-port=".length)) || 9222;
+    } else if (arg === "--remote-debugging-port") {
+      flags.cdpPort = parseInt(argv[++i]) || 9222;
+    } else if (arg.startsWith("--remote-debugging-address=")) {
+      flags.cdpAddress = arg.slice("--remote-debugging-address=".length);
+    } else if (arg === "--remote-debugging-address") {
+      flags.cdpAddress = argv[++i] ?? "";
+    } else if (arg.startsWith("-") && arg.length > 1 && i + 1 < argv.length) {
       flags.settings.set(arg.slice(1), argv[++i]);
     } else {
       files.push(arg);
@@ -576,7 +586,11 @@ function usage() {
     "    Show version+backend info & exit",
     "--docs, --readme",
     `    Show ${pkg.name}'s README.md & exit`,
-
+    "",
+    "--remote-debugging-port=PORT",
+    "    Start CDP (Chrome DevTools Protocol) server on PORT at launch",
+    "--remote-debugging-address=ADDRESS",
+    "    Bind CDP server to ADDRESS (default: 127.0.0.1); use 0.0.0.0 for all interfaces",
 
   ].join("\n");
 }
@@ -5811,7 +5825,7 @@ function detectTtsCmd() {
   Bun.env.TTS_LANG = lang ;
 
   if (platform === "android") {
-    if (runSync(["sh", "-c", "command -v termux-tts-speak"], { stdout: "ignore", stderr: "ignore" }).ok)
+    if (Bun.which("termux-tts-speak"))
       return { cmd: ["termux-tts-speak", "-p", String(pitch), "-r", String(speed)], via: "arg" };
   }
 
@@ -5832,7 +5846,7 @@ function detectTtsCmd() {
     const pitchPct = Math.round((pitch - 1) * 100);
     const pitchAttr = (pitchPct >= 0 ? "+" : "") + pitchPct + "%";
     for (const shell of ["pwsh.exe", "powershell.exe"]) {
-      if (runSync(["where.exe", shell], { stdout: "ignore", stderr: "ignore" }).ok) {
+      if (Bun.which(shell)) {
         const psCmd =
           "Add-Type -AssemblyName System.Speech; " +
           `$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = ${rate}; ` +
@@ -5847,7 +5861,7 @@ function detectTtsCmd() {
   // Linux / Android fallback: espeak-ng / espeak
   // Speed: -s <wpm> (175 = normal), Pitch: -p <n> (0-99, 50 = normal)
   for (const bin of ["espeak-ng", "espeak"]) {
-    if (runSync(["sh", "-c", `command -v ${bin}`], { stdout: "ignore", stderr: "ignore" }).ok) {
+    if (Bun.which(bin)) {
       const spd = Math.round(175 * speed);
       const pit = Math.max(0, Math.min(99, Math.round(50 * pitch)));
       return { cmd: [bin, '-s', spd, '-p', pit], via: "arg" };
@@ -6725,6 +6739,11 @@ async function main() {
     for (const buffer of buffers) await plugins.run("onBufferOpen", buffer);
   }
   for (const buffer of buffers) await jsPlugins.run("onBufferOpen", buffer);
+  if (flags.cdpPort) {
+    const cdpArgs = [flags.cdpPort];
+    if (flags.cdpAddress) cdpArgs.push(`--address=${flags.cdpAddress}`);
+    await app.handleCommand(`cdp ${cdpArgs.join(" ")}`);
+  }
   await app.start();
 }
 
