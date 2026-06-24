@@ -1,5 +1,94 @@
 #!/usr/bin/env bun
 
+const jsStart = globalThis.Bun ? Bun.nanoseconds() : Date.now() * 1e6;
+const checkpoints = [
+  { name: "Bun Engine Boot", time: 0 },
+  { name: "JS Load & Module Imports", time: jsStart }
+];
+function addCheckpoint(name) {
+  checkpoints.push({ name, time: globalThis.Bun ? Bun.nanoseconds() : Date.now() * 1e6 });
+}
+
+let parallelTimings = null;
+
+function printProfileReport() {
+  console.log("\x1b[1m\x1b[36m=== Bunmicro Startup Performance Profile ===\x1b[0m\n");
+  
+  let totalMs = 0;
+  const rows = [];
+  
+  for (let i = 0; i < checkpoints.length - 1; i++) {
+    const current = checkpoints[i];
+    const next = checkpoints[i + 1];
+    const durationNs = next.time - current.time;
+    const durationMs = durationNs / 1e6;
+    totalMs += durationMs;
+    
+    rows.push({
+      phase: current.name,
+      durationMs: durationMs,
+      cumulativeMs: totalMs
+    });
+  }
+  
+  const colWidths = { phase: 32, duration: 15, cumulative: 15 };
+  
+  const header = 
+    "Phase".padEnd(colWidths.phase) + " | " +
+    "Duration (ms)".padStart(colWidths.duration) + " | " +
+    "Cumulative (ms)".padStart(colWidths.cumulative);
+  
+  const separator = 
+    "-".repeat(colWidths.phase) + "-+-" +
+    "-".repeat(colWidths.duration) + "-+-" +
+    "-".repeat(colWidths.cumulative);
+    
+  console.log(header);
+  console.log(separator);
+  
+  for (const row of rows) {
+    const phaseStr = row.phase.padEnd(colWidths.phase);
+    const durStr = row.durationMs.toFixed(3).padStart(colWidths.duration);
+    const cumStr = row.cumulativeMs.toFixed(3).padStart(colWidths.cumulative);
+    
+    let color = "";
+    if (row.durationMs > 50) {
+      color = "\x1b[31m"; // Red
+    } else if (row.durationMs > 10) {
+      color = "\x1b[33m"; // Yellow
+    }
+    
+    const reset = color ? "\x1b[0m" : "";
+    console.log(`${color}${phaseStr}${reset} | ${color}${durStr}${reset} | ${cumStr}`);
+  }
+  
+  console.log(separator);
+  
+  if (parallelTimings) {
+    console.log("\x1b[1mParallel Tasks Breakdown:\x1b[0m");
+    console.log(`  ├── Lua Plugins & Hooks : ${parallelTimings.lua.toFixed(3).padStart(8)} ms`);
+    console.log(`  ├── JS Plugins Load     : ${parallelTimings.js.toFixed(3).padStart(8)} ms`);
+    console.log(`  └── Buffer & History    : ${parallelTimings.buffers.toFixed(3).padStart(8)} ms`);
+    console.log(separator);
+  }
+  
+  console.log(`\x1b[1mTotal Startup Time: ${totalMs.toFixed(3)} ms\x1b[0m\n`);
+  
+  const slowest = [...rows].sort((a, b) => b.durationMs - a.durationMs)[0];
+  if (slowest) {
+    console.log(`\x1b[1mSlowest Phase:\x1b[0m ${slowest.phase} (${slowest.durationMs.toFixed(3)} ms)`);
+    if (slowest.phase.includes("Clipboard")) {
+      console.log("\x1b[32mTip: Clipboard probing can be slow. Setting 'clipboard' option to 'terminal' or a specific tool can bypass auto-detection.\x1b[0m");
+    } else if (slowest.phase.includes("Plugin")) {
+      console.log("\x1b[32mTip: Disable unnecessary plugins to speed up startup.\x1b[0m");
+    } else if (slowest.phase.includes("Syntax")) {
+      console.log("\x1b[32mTip: Syntax loading parses many YAML/JSON files. You can pre-compile or bundle syntax definitions to speed this up.\x1b[0m");
+    } else if (slowest.phase.includes("JS Load")) {
+      console.log("\x1b[32mTip: JS load time includes loading packages like wasmoon, which might take time due to file system lookups.\x1b[0m");
+    }
+  }
+}
+
 import child_process from "node:child_process"
 import { accessSync, constants, existsSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -531,7 +620,7 @@ function parseArgs(argv) {
     else if (arg === "--cat" || arg === "-cat" || arg === "--ccat" || arg === "-ccat" || arg === "--bat" || arg === "-bat" || arg === "--glow" || arg === "-glow") flags.cat = true;
     else if (arg === "--docs" || arg === "--readme") flags.docs = true;
     else if (arg === "-debug") flags.debug = true;
-    else if (arg === "-profile") flags.profile = true;
+    else if (arg === "-profile" || arg === "--profile") flags.profile = true;
     else if (arg === "-config-dir") flags.configDir = argv[++i] ?? "";
     else if (arg === "-plugin") flags.plugin = argv[++i] ?? "";
     else if (arg.startsWith("--remote-debugging-port=")) {
@@ -578,6 +667,8 @@ function usage() {
     "    Set an option for this session",
     "-options",
     "    Show option help and exit\n",
+    "-profile, --profile",
+    "    Print startup performance profile and exit\n",
     "--cat, --ccat, --bat, --glow",
     "    Syntax-highlight file(s) and write to stdout, then exit (.md uses Bun.markdown.ansi)\n",
     "-help, -h, --help",
@@ -6594,6 +6685,7 @@ async function printReadmeDocs() {
 }
 
 async function main() {
+  addCheckpoint("Argument Parsing");
   const { flags, files: rawFiles } = parseArgs(process.argv.slice(2));
   if (flags.help) {
     console.log(usage());
@@ -6635,13 +6727,16 @@ async function main() {
     }
     return;
   }
+  addCheckpoint("Config Initialization");
   const config = await new Config({ configDir: flags.configDir }).init();
   config.applyCliSettings(flags.settings);
   syncEditorSettings(config);
 
+  addCheckpoint("Runtime Registry Init");
   const runtime = new RuntimeRegistry({ repoRoot: REPO_ROOT, configDir: config.configDir });
   await runtime.init({ user: true });
 
+  addCheckpoint("Colorscheme & Syntax Load");
   const colorscheme = await new Colorscheme(runtime).load(config.getGlobalOption("colorscheme") || "default");
   const syntaxDefinitions = await loadSyntaxDefinitions(runtime);
 
@@ -6650,6 +6745,7 @@ async function main() {
     return;
   }
 
+  addCheckpoint("Lua Plugin Manager Init");
   const plugins = new PluginManager({ config, runtime, repoRoot: REPO_ROOT });
   await plugins.init();
 
@@ -6688,50 +6784,93 @@ async function main() {
     return;
   }
 
-  const pluginErr = await plugins.loadAll();
-  if (pluginErr) console.error(`Plugin runtime disabled: ${pluginErr.message}`);
-  if (!pluginErr) {
-    await plugins.run("preinit");
-    await plugins.run("init");
-    await plugins.run("postinit");
-  }
-
-  // ── JS plugin system ──────────────────────────────────────────────────────
-  const jsPlugins = new JsPluginManager();
   const { files, command } = parseInput(rawFiles);
+  const jsPlugins = new JsPluginManager();
   const context = { colorscheme, syntaxDefinitions, plugins, config, runtime, jsPlugins };
   jsPlugins.setContext(context);
   buildMicroGlobal(jsPlugins);   // sets globalThis.micro
 
-  const jsDirs = [
-    { dir: join(REPO_ROOT, "runtime", "jsplugins"), builtin: true },
-    { dir: join(config.configDir, "jsplug"),        builtin: false },
-  ];
-  await jsPlugins.loadFrom(jsDirs);
-  // ─────────────────────────────────────────────────────────────────────────
+  addCheckpoint("Parallel Initialization Start");
 
-  if (DEFAULT_SETTINGS.savecursor) {
-    context.cursorStates = await loadCursorStates(config.configDir);
-  }
-  // Backup prompt available before App starts (stdin still in cooked mode).
-  context._termPrompt = process.stdout.isTTY ? termPromptLine : null;
-  loadBuffers.context = context;
-  const buffers = await loadBuffers(files.map((file) =>
-    isHttpUrl(file) ? file : resolve(file)
-  ), command);
+  const luaPromise = (async () => {
+    // return 0;
+    const start = Bun.nanoseconds();
+    const pluginErr = await plugins.loadAll();
+    if (pluginErr) console.error(`Plugin runtime disabled: ${pluginErr.message}`);
+    if (!pluginErr) {
+      await plugins.run("preinit");
+      await plugins.run("init");
+      await plugins.run("postinit");
+    }
+    const end = Bun.nanoseconds();
+    return { pluginErr, duration: end - start };
+  })();
 
-  if (!process.stdout.isTTY) {
+  const jsPromise = (async () => {
+    const start = Bun.nanoseconds();
+    const jsDirs = [
+      { dir: join(REPO_ROOT, "runtime", "jsplugins"), builtin: true },
+      { dir: join(config.configDir, "jsplug"),        builtin: false },
+    ];
+    await jsPlugins.loadFrom(jsDirs);
+    const end = Bun.nanoseconds();
+    return { duration: end - start };
+  })();
+
+  const buffersPromise = (async () => {
+    const start = Bun.nanoseconds();
+    let cursorStates = {};
+    if (DEFAULT_SETTINGS.savecursor) {
+      cursorStates = await loadCursorStates(config.configDir);
+    }
+    // Mix in context properties needed for buffer loading:
+    context.cursorStates = cursorStates;
+    context._openBuffers = new Map();
+    context._termPrompt = process.stdout.isTTY ? termPromptLine : null;
+    
+    loadBuffers.context = context;
+    const buffers = await loadBuffers(files.map((file) =>
+      isHttpUrl(file) ? file : resolve(file)
+    ), command);
+
+    let historyPromise = Promise.resolve();
+    if (config.getGlobalOption("savehistory") !== false) {
+      historyPromise = loadHistory(config.configDir);
+    }
+    await historyPromise;
+    const end = Bun.nanoseconds();
+    return { buffers, duration: end - start };
+  })();
+
+  const [luaResult, jsResult, buffersResult] = await Promise.all([
+    luaPromise,
+    jsPromise,
+    buffersPromise
+  ]);
+
+  addCheckpoint("Parallel Initialization End");
+
+  parallelTimings = {
+    lua: luaResult.duration / 1e6,
+    js: jsResult.duration / 1e6,
+    buffers: buffersResult.duration / 1e6
+  };
+
+  const { pluginErr } = luaResult;
+  const { buffers } = buffersResult;
+
+  if (!process.stdout.isTTY && !flags.profile) {
     console.log(buffers[0].lines.join("\n"));
     return;
   }
-  if (config.getGlobalOption("savehistory") !== false) {
-    await loadHistory(config.configDir);
-  }
+  
+  addCheckpoint("App Instantiation");
   const app = new App(buffers, context);
   jsPlugins.setApp(app);
   if (plugins && !pluginErr && app.buffer) plugins.curPaneAdapter = makePaneAdapter(app.buffer, app);
   // Dispatch all JS plugin lifecycle hooks after setApp so TermMessage,
   // CurPane, cmd/action proxies, and buffer APIs all work correctly.
+  addCheckpoint("JS Lifecycle Hooks");
   await jsPlugins.run("preinit");
   await jsPlugins.run("init");
   await jsPlugins.run("postinit");
@@ -6744,6 +6883,26 @@ async function main() {
     if (flags.cdpAddress) cdpArgs.push(`--address=${flags.cdpAddress}`);
     await app.handleCommand(`cdp ${cdpArgs.join(" ")}`);
   }
+  
+  if (flags.profile) {
+    addCheckpoint("Clipboard Probing");
+    const clipSetting = config.getGlobalOption("clipboard") ?? "external";
+    const clipboard = new ClipboardManager();
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      await clipboard.initFromSetting(clipSetting, process.stdin, process.stdout, 150);
+      process.stdin.setRawMode?.(false);
+      process.stdin.pause();
+    } else {
+      await clipboard.initFromSetting(clipSetting, process.stdin, process.stdout, 150);
+    }
+    
+    addCheckpoint("Profile Done");
+    printProfileReport();
+    process.exit(0);
+  }
+  
   await app.start();
 }
 
