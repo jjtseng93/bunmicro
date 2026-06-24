@@ -623,6 +623,9 @@ function parseArgs(argv) {
       flags.cat = true;
       flags.settings.set("encoding", "hex3");
     }
+    else if (arg === "--hex3") {
+      flags.settings.set("encoding", "hex3");
+    }
     else if (arg === "--docs" || arg === "--readme") flags.docs = true;
     else if (arg === "--changelog") flags.changelog = true;
     else if (arg === "-debug") flags.debug = true;
@@ -679,6 +682,8 @@ function usage() {
     "    Syntax-highlight file(s) and write to stdout, then exit (.md uses Bun.markdown.ansi)\n",
     "--xxd, --hexdump",
     "    Hex3 dump file(s) and write to stdout (same as --cat -encoding hex3)\n",
+    "--hex3",
+    "    Set -encoding hex3 for this session\n",
     "-help, -h, --help",
     "    Show this help & exit",
     "-version, -V, --version",

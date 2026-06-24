@@ -5,8 +5,9 @@
   * -profile / --profile
 - Added docs flags
   * --changelog alongside --docs / --readme
-- Added hex dump aliases
+- Added hex3 aliases
   * --xxd / --hexdump => --cat -encoding hex3
+  * --hex3 => -encoding hex3
 - Fixed stdin encoding handling
   * hex3 now applies when reading from stdin
 - Parallelized startup loading
