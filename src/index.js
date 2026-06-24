@@ -619,6 +619,10 @@ function parseArgs(argv) {
     else if (arg === "-help" || arg === "--help" || arg === "-h") flags.help = true;
     else if (arg === "-clean") flags.clean = true;
     else if (arg === "--cat" || arg === "-cat" || arg === "--ccat" || arg === "-ccat" || arg === "--bat" || arg === "-bat" || arg === "--glow" || arg === "-glow") flags.cat = true;
+    else if (arg === "--xxd" || arg === "--hexdump") {
+      flags.cat = true;
+      flags.settings.set("encoding", "hex3");
+    }
     else if (arg === "--docs" || arg === "--readme") flags.docs = true;
     else if (arg === "--changelog") flags.changelog = true;
     else if (arg === "-debug") flags.debug = true;
@@ -673,6 +677,8 @@ function usage() {
     "    Print startup performance profile and exit\n",
     "--cat, --ccat, --bat, --glow",
     "    Syntax-highlight file(s) and write to stdout, then exit (.md uses Bun.markdown.ansi)\n",
+    "--xxd, --hexdump",
+    "    Hex3 dump file(s) and write to stdout (same as --cat -encoding hex3)\n",
     "-help, -h, --help",
     "    Show this help & exit",
     "-version, -V, --version",
