@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.2] - 2026-06-24
+- Added startup profiling flags
+  * -profile / --profile
+- Added docs flags
+  * --changelog alongside --docs / --readme
+- Added hex dump aliases
+  * --xxd / --hexdump => --cat -encoding hex3
+- Fixed stdin encoding handling
+  * hex3 now applies when reading from stdin
+- Parallelized startup loading
+  * Lua, JS, and buffer init now run in parallel with safe degradation
+  * startup performance improves a lot
+
 ## [1.0.0] - 2026-06-22
 - Changed command -v to Bun.which
   * for performance improvement
