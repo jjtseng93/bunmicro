@@ -5,6 +5,8 @@
   * -profile / --profile
 - Added docs flags
   * --changelog alongside --docs / --readme
+- Disabled OSC 52 probing
+  * clipboard now treats OSC 52 as available without detection
 - Added hex3 aliases
   * --xxd / --hexdump => --cat -encoding hex3
   * --hex3 => -encoding hex3

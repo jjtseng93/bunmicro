@@ -256,6 +256,9 @@ export function osc52Clipboard(stdout) {
 }
 
 export async function probeOSC52(ttyIn, ttyOut, timeoutMs) {
+  return true;
+  // Almost no terminal reliably supports probing OSC 52, so treat it as
+  // available and let the actual write path fail or work on its own.
   if (process.env.TMUX) return true;
   return new Promise((resolve) => {
     let done = false;
