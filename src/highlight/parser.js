@@ -40,15 +40,19 @@ export class SyntaxDefinition {
 
 export async function loadSyntaxDefinitions(runtime) {
   const headers = new Map();
-  for (const file of runtime.list(4)) {
-    headers.set(file.name, parseHeaderFile(await file.text()));
-  }
+  const headerPromises = runtime.list(4).map(async (file) => {
+    try {
+      const text = await file.text();
+      headers.set(file.name, parseHeaderFile(text));
+    } catch {}
+  });
+  await Promise.allSettled(headerPromises);
 
-  const definitions = [];
-  for (const file of runtime.list(1)) {
+  const defPromises = runtime.list(1).map(async (file) => {
     let text = "";
     let activeFile = file;
     let source = null;
+    let usedFallback = false;
     try {
       text = await file.text();
       source = Bun.YAML.parse(text);
@@ -59,21 +63,26 @@ export async function loadSyntaxDefinitions(runtime) {
           text = await fallback.text();
           source = Bun.YAML.parse(text);
           activeFile = fallback;
+          usedFallback = true;
           console.error("Failed to load user syntax yaml, using built-in fallback:", file.name);
         } catch {}
       }
     }
-
+    const header = headers.get(activeFile.name) ?? (source ? parseHeaderYaml(source) : parseHeaderTextFallback(text, activeFile.name));
     if (!source) {
       console.error("Failed to load syntax yaml:", file.name);
       console.error("  Will not highlight this kind of file");
       console.error("  @ loadSyntaxDefinitions ");
+    } else if (usedFallback) {
+      // keep the fallback path visible in logs, but do not fail the load
     }
-
-    const header = headers.get(activeFile.name) ?? (source ? parseHeaderYaml(source) : parseHeaderTextFallback(text, activeFile.name));
-    definitions.push(new SyntaxDefinition(header, source ?? { rules: [] }, text));
-  }
-  return definitions;
+    return new SyntaxDefinition(header, source ?? { rules: [] }, text);
+  });
+  
+  const definitions = await Promise.allSettled(defPromises);
+  return definitions
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
 }
 
 export function detectSyntax(definitions, { path = "", firstLine = "", lines = [] } = {}) {
