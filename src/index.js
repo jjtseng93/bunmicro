@@ -6855,11 +6855,32 @@ async function main() {
     return { buffers, duration: end - start };
   })();
 
-  const [luaResult, jsResult, buffersResult] = await Promise.all([
+  const [luaSettled, jsSettled, buffersSettled] = await Promise.allSettled([
     luaPromise,
     jsPromise,
     buffersPromise
   ]);
+
+  const luaResult = luaSettled.status === "fulfilled"
+    ? luaSettled.value
+    : { pluginErr: luaSettled.reason, duration: 0 };
+  if (luaSettled.status === "rejected") {
+    console.error(`Lua plugin runtime disabled: ${luaSettled.reason?.message || luaSettled.reason}`);
+  }
+
+  const jsResult = jsSettled.status === "fulfilled"
+    ? jsSettled.value
+    : { duration: 0 };
+  if (jsSettled.status === "rejected") {
+    console.error(`JS plugin runtime disabled: ${jsSettled.reason?.message || jsSettled.reason}`);
+  }
+
+  const buffersResult = buffersSettled.status === "fulfilled"
+    ? buffersSettled.value
+    : { buffers: [new BufferModel({ command })], duration: 0 };
+  if (buffersSettled.status === "rejected") {
+    console.error(`Buffer load failed: ${buffersSettled.reason?.message || buffersSettled.reason}`);
+  }
 
   addCheckpoint("Parallel Initialization End");
 
