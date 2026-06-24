@@ -6668,8 +6668,16 @@ async function loadBuffers(files, command) {
   } else if (!process.stdin.isTTY) {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    const stdinText = Buffer.concat(chunks).toString("utf8");
-    const stdinBuf = new BufferModel({ text: stdinText, type: process.stdout.isTTY ? "default" : "stdout", command });
+    const context = loadBuffers.context ?? {};
+    const encoding = context.config?.globalSettings?.encoding ?? DEFAULT_SETTINGS.encoding;
+    const decoded = decodeTextBytesWithEncoding(Buffer.concat(chunks), encoding);
+    const stdinText = decoded.text;
+    const stdinBuf = new BufferModel({
+      text: stdinText,
+      type: process.stdout.isTTY ? "default" : "stdout",
+      command,
+      encoding: decoded.encoding,
+    });
     if (loadBuffers.context) attachSyntax(stdinBuf, loadBuffers.context, "", stdinText);
     buffers.push(stdinBuf);
   } else {
