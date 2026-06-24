@@ -601,6 +601,7 @@ function parseArgs(argv) {
     clean: false,
     cat: false,
     docs: false,
+    changelog: false,
     configDir: "",
     debug: false,
     profile: false,
@@ -619,6 +620,7 @@ function parseArgs(argv) {
     else if (arg === "-clean") flags.clean = true;
     else if (arg === "--cat" || arg === "-cat" || arg === "--ccat" || arg === "-ccat" || arg === "--bat" || arg === "-bat" || arg === "--glow" || arg === "-glow") flags.cat = true;
     else if (arg === "--docs" || arg === "--readme") flags.docs = true;
+    else if (arg === "--changelog") flags.changelog = true;
     else if (arg === "-debug") flags.debug = true;
     else if (arg === "-profile" || arg === "--profile") flags.profile = true;
     else if (arg === "-config-dir") flags.configDir = argv[++i] ?? "";
@@ -677,6 +679,8 @@ function usage() {
     "    Show version+backend info & exit",
     "--docs, --readme",
     `    Show ${pkg.name}'s README.md & exit`,
+    "--changelog",
+    "    Show CHANGELOG.md & exit",
     "",
     "--remote-debugging-port=PORT",
     "    Start CDP (Chrome DevTools Protocol) server on PORT at launch",
@@ -6684,6 +6688,11 @@ async function printReadmeDocs() {
   process.stdout.write(Bun.markdown.ansi(readme, { hyperlinks: true }));
 }
 
+async function printChangelogDocs() {
+  const changelog = await Bun.file(join(REPO_ROOT, "CHANGELOG.md")).text();
+  process.stdout.write(Bun.markdown.ansi(changelog, { hyperlinks: true }));
+}
+
 async function main() {
   addCheckpoint("Argument Parsing");
   const { flags, files: rawFiles } = parseArgs(process.argv.slice(2));
@@ -6718,6 +6727,10 @@ async function main() {
   }
   if (flags.docs) {
     await printReadmeDocs();
+    return;
+  }
+  if (flags.changelog) {
+    await printChangelogDocs();
     return;
   }
   if (flags.options) {
