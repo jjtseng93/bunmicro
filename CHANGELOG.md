@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3] - 2026-06-27
+- Added hex3 series encodings
+  * hex3gz / hex3zst add compressed binary-view encodings
+- Added experimental single-file exe support
+  * bundled assets loader
+  * internal assets fallback to external file tree when needed
+
 ## [1.0.2] - 2026-06-24
 - Added startup profiling flags
   * -profile / --profile
