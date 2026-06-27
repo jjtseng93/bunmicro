@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 //import { Glob } from "bun";
 import { defaultAllSettings, OPTION_CHOICES, LOCAL_SETTINGS } from "./defaults.js";
+import { isHex3Encoding } from "../runtime/encodings.js";
 
 export class Config {
   constructor({ configDir = "" } = {}) {
@@ -105,7 +106,7 @@ function normalizeSetting(key, value) {
 function validateOption(option, value) {
   if (option === "encoding") {
     const encoding = String(value || "utf-8");
-    if (encoding === "hex3") return;
+    if (isHex3Encoding(encoding)) return;
     try { new TextDecoder(encoding); }
     catch { throw new Error(`Invalid encoding: ${value}`); }
   }

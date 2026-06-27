@@ -117,6 +117,7 @@ import { shellSplit } from "./shell/shell.js";
 import { styleToAnsi } from "./display/ansi-style.js";
 import { encodeBinaryToBuffer, decodeBinaryBytes } from "./buffer/fixed3-codec.js";
 import { writeBackup, removeBackup, applyBackup } from "./buffer/backup.js";
+import { isHex3Encoding } from "./runtime/encodings.js";
 import { createInterface } from "node:readline/promises";
 
 import pkg from "../package.json" with { type: "json" };
@@ -261,11 +262,42 @@ function isHttpUrl(value) {
 }
 
 function decodeTextBytesWithEncoding(bytes, encoding = "utf-8") {
-  if (normalizeEncodingLabel(encoding) === "hex3") {
-    return { text: encodeBinaryToBuffer(bytes).toString("latin1"), encoding: "hex3" };
+  const normalized = normalizeEncodingLabel(encoding);
+  if (normalized === "hex3gz") {
+    const decoded = decodeHex3Bytes(Bun.gunzipSync(bytes));
+    return { ...decoded, encoding: "hex3gz" };
   }
-  const decoder = new TextDecoder(normalizeEncodingLabel(encoding));
+  if (normalized === "hex3zst") {
+    const decoded = decodeHex3Bytes(Bun.zstdDecompressSync(bytes));
+    return { ...decoded, encoding: "hex3zst" };
+  }
+  if (normalized === "hex3") {
+    return decodeHex3Bytes(bytes);
+  }
+  const decoder = new TextDecoder(normalized);
   return { text: decoder.decode(bytes), encoding: decoder.encoding };
+}
+
+function encodeTextBytesWithEncoding(text, encoding = "utf-8") {
+  const normalized = normalizeEncodingLabel(encoding);
+  if (normalized === "hex3gz") {
+    return Bun.gzipSync(encodeHex3Text(text));
+  }
+  if (normalized === "hex3zst") {
+    return Bun.zstdCompressSync(encodeHex3Text(text));
+  }
+  if (normalized === "hex3") {
+    return encodeHex3Text(text);
+  }
+  return new TextEncoder().encode(String(text));
+}
+
+function decodeHex3Bytes(bytes) {
+  return { text: encodeBinaryToBuffer(bytes).toString("latin1"), encoding: "hex3" };
+}
+
+function encodeHex3Text(text) {
+  return decodeBinaryBytes(Buffer.from(text, "latin1"));
 }
 
 async function readTextFileWithEncoding(path, encoding = "utf-8") {
@@ -280,7 +312,7 @@ async function fetchTextWithEncoding(url, encoding = "utf-8") {
 
 function normalizeEncodingLabel(encoding = "utf-8") {
   const s = String(encoding || "utf-8");
-  if (s === "hex3") return "hex3";
+  if (isHex3Encoding(s)) return s.toLowerCase();
   return new TextDecoder(s).encoding;
 }
 
@@ -634,6 +666,12 @@ function parseArgs(argv) {
     else if (arg === "--hex3") {
       flags.settings.set("encoding", "hex3");
     }
+    else if (arg === "--hex3gz") {
+      flags.settings.set("encoding", "hex3gz");
+    }
+    else if (arg === "--hex3zst") {
+      flags.settings.set("encoding", "hex3zst");
+    }
     else if (arg === "--docs" || arg === "--readme") flags.docs = true;
     else if (arg === "--changelog") flags.changelog = true;
     else if (arg === "-debug") flags.debug = true;
@@ -690,8 +728,9 @@ function usage() {
     "    Syntax-highlight file(s) and write to stdout, then exit (.md uses Bun.markdown.ansi)\n",
     "--xxd, --hexdump",
     "    Hex3 dump file(s) and write to stdout (same as --cat -encoding hex3)\n",
-    "--hex3",
-    "    Set -encoding hex3 for this session\n",
+    "--hex3, --hex3gz, --hex3zst",
+    "    Set -encoding hex3, hex3gz, or hex3zst for this session",
+    "    hex3 shows raw bytes; gz/zst variants compress the same hex3 view\n",
     "-help, -h, --help",
     "    Show this help & exit",
     "-version, -V, --version",
@@ -1291,9 +1330,9 @@ class BufferModel {
       if (this._backupRevision === backupRevision) this._backupRequested = false;
       this._forceKeepBackup = true;
     }
-    if (this.encoding === "hex3") {
+    if (isHex3Encoding(this.encoding)) {
       try {
-        await Bun.write(targetPath, decodeBinaryBytes(Buffer.from(text, "latin1")));
+        await Bun.write(targetPath, encodeTextBytesWithEncoding(text, this.encoding));
       } finally {
         this._forceKeepBackup = false;
       }
@@ -4151,7 +4190,7 @@ class App {
     if (!force && this.buffer?.readonly) { this.message = "Can't save under readonly mode"; return; }
     try {
       const enc = normalizeEncodingLabel(this.buffer?.encoding);
-      if (enc !== "utf-8" && enc !== "hex3") {
+      if (enc !== "utf-8" && !isHex3Encoding(enc)) {
         this.openYNPrompt("Save in UTF-8?(y,n)", async (answer) => {
           if (answer === "y") await this.saveUtf8();
         });
@@ -4568,7 +4607,8 @@ class App {
         const saveArgs = [...cmdArgs];
         const saveForce = saveArgs[0] === "-f" && (saveArgs.shift(), true);
         if (!saveForce && buf?.readonly) { this.message = "Can't save under readonly mode"; break; }
-        if (saveArgs.length > 0 && normalizeEncodingLabel(buf?.encoding) !== "utf-8" && normalizeEncodingLabel(buf?.encoding) !== "hex3") {
+        const bufferEncoding = normalizeEncodingLabel(buf?.encoding);
+        if (saveArgs.length > 0 && bufferEncoding !== "utf-8" && !isHex3Encoding(bufferEncoding)) {
           const target = resolve(expandHome(saveArgs[0]));
           this.openYNPrompt("Save in UTF-8?(y,n)", async (answer) => {
             if (answer === "y") {
@@ -5443,14 +5483,14 @@ const COMMAND_NAMES = [
 ];
 
 const SUPPORTED_ENCODING_LABELS = [
-  "hex3",
+  "hex3", "hex3gz", "hex3zst",
   "utf-8", "utf-16le", "utf-16be",
   "windows-1252", "iso-8859-1", "latin1",
   "big5", "gbk", "gb18030",
   "shift_jis", "sjis", "euc-jp", "iso-2022-jp",
   "euc-kr", "ks_c_5601-1987",
 ].filter((encoding) => {
-  if (encoding === "hex3") return true;
+  if (isHex3Encoding(encoding)) return true;
   try { new TextDecoder(encoding); return true; }
   catch { return false; }
 });
