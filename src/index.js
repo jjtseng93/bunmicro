@@ -169,6 +169,9 @@ const IS_COMPILED = isCompiledBinary(process.argv);
 const REPO_ROOT = IS_COMPILED
   ? resolveCompiledBaseDir({ argv: process.argv })
   : resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SINGLE_EXE_DIR = resolve(REPO_ROOT, "single-exe");
+const SINGLE_EXE_ENTRY = resolve(SINGLE_EXE_DIR, "entry.mjs");
+const DEFAULT_BUILD_OUTFILE = "bmi";
 const decoder = new TextDecoder();
 let _activeTtyStream = null; // set in App.start() for use by the global error handler
 
@@ -642,6 +645,8 @@ function parseArgs(argv) {
     cat: false,
     docs: false,
     changelog: false,
+    buildExe: false,
+    buildFor: "",
     configDir: "",
     debug: false,
     profile: false,
@@ -674,6 +679,8 @@ function parseArgs(argv) {
     }
     else if (arg === "--docs" || arg === "--readme") flags.docs = true;
     else if (arg === "--changelog") flags.changelog = true;
+    else if (arg === "--build-exe") flags.buildExe = true;
+    else if (arg === "--build-for") flags.buildFor = argv[++i] ?? "";
     else if (arg === "-debug") flags.debug = true;
     else if (arg === "-profile" || arg === "--profile") flags.profile = true;
     else if (arg === "-config-dir") flags.configDir = argv[++i] ?? "";
@@ -746,6 +753,50 @@ function usage() {
     "    Bind CDP server to ADDRESS (default: 127.0.0.1); use 0.0.0.0 for all interfaces",
 
   ].join("\n");
+}
+
+async function buildExecutable(target = "") {
+  const outfile = resolve(process.cwd(), DEFAULT_BUILD_OUTFILE);
+  const normalizedTarget = String(target || "").trim();
+
+  const steps = [
+    {
+      label: "Pack assets",
+      cwd: SINGLE_EXE_DIR,
+      cmd: "bun",
+      args: ["./packAssets.sh"],
+    },
+    {
+      label: "Compile executable",
+      cwd: process.cwd(),
+      cmd: "bun",
+      args: [
+        "build",
+        "--compile",
+        "--bytecode",
+        "--minify",
+        SINGLE_EXE_ENTRY,
+        `--outfile=${DEFAULT_BUILD_OUTFILE}`,
+        ...(normalizedTarget ? [`--target=${normalizedTarget}`] : []),
+      ],
+    },
+  ];
+
+  for (const step of steps) {
+    console.log('');
+    console.log(Bun.markdown.ansi('## '+step.label));
+  
+    const result = child_process.spawnSync(step.cmd, step.args, {
+      cwd: step.cwd,
+      stdio: "inherit",
+      env: process.env,
+    });
+    if (result.status !== 0) {
+      process.exit(result.status ?? 1);
+    }
+  }
+
+  console.log(`Built executable: ${outfile}`);
 }
 
 function parseInput(args) {
@@ -6763,6 +6814,26 @@ async function printChangelogDocs() {
 async function main() {
   addCheckpoint("Argument Parsing");
   const { flags, files: rawFiles } = parseArgs(process.argv.slice(2));
+  if (flags.buildExe && flags.buildFor) {
+    console.error("--build-exe and --build-for are separate paths; use only one");
+    process.exit(1);
+  }
+  if (flags.buildExe) {
+    if (IS_COMPILED) {
+      console.error("--build-exe is only available in the source tree");
+      process.exit(1);
+    }
+    await buildExecutable();
+    return;
+  }
+  if (flags.buildFor) {
+    if (IS_COMPILED) {
+      console.error("--build-for is only available in the source tree");
+      process.exit(1);
+    }
+    await buildExecutable(flags.buildFor);
+    return;
+  }
   if (flags.help) {
     console.log(usage());
     return;

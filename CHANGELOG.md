@@ -6,6 +6,9 @@
 - Added experimental single-file exe support
   * bundled assets loader
   * internal assets fallback to external file tree when needed
+- Added build helpers for single-exe packaging
+  * `--build-exe` runs the asset pack + compile flow
+  * `--build-for <target>` runs the same flow with an explicit Bun build target
 
 ## [1.0.2] - 2026-06-24
 - Added startup profiling flags
