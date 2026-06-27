@@ -791,9 +791,12 @@ async function buildExecutable(target = "") {
       stdio: "inherit",
       env: process.env,
     });
-    if (result.status !== 0) {
-      process.exit(result.status ?? 1);
-    }
+    
+    console.log("");
+    console.log(Bun.markdown.ansi(
+      '- Status: '+result.status+' for '+step.label
+    ));
+    
   }
 
   console.log(`Built executable: ${outfile}`);

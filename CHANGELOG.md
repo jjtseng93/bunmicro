@@ -1,5 +1,8 @@
 # Changelog
 
+## [1.0.4] - 2026-06-28
+- Fixed `--build-exe` for npx
+
 ## [1.0.3] - 2026-06-27
 - Added hex3 series encodings
   * hex3gz / hex3zst add compressed binary-view encodings

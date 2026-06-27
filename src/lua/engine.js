@@ -30,7 +30,8 @@ export async function createLuaEngine() {
 }
 
 async function resolveLuaWasmLocation() {
-  const wasmBytes = readInternalAssetBytes("node_modules/wasmoon/dist/glue.wasm");
+  const wasmAssetPath = "runtime/wasmoon_glue.wasm";
+  const wasmBytes = readInternalAssetBytes(wasmAssetPath);
   if (wasmBytes) {
     const wasmPath = join(tmpdir(), "bunmicro-wasmoon-glue.wasm");
     try {
@@ -46,8 +47,8 @@ async function resolveLuaWasmLocation() {
   }
 
   const fallbackPath = isCompiledBinary(process.argv)
-    ? join(resolveCompiledBaseDir({ argv: process.argv }), "node_modules", "wasmoon", "dist", "glue.wasm")
-    : join(SOURCE_ROOT, "node_modules", "wasmoon", "dist", "glue.wasm");
+    ? join(resolveCompiledBaseDir({ argv: process.argv }), wasmAssetPath)
+    : join(SOURCE_ROOT, wasmAssetPath);
 
   return existsSync(fallbackPath) ? fallbackPath : undefined;
 }

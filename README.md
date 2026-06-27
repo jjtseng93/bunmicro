@@ -129,6 +129,11 @@ bun x bunmicro
 # bun ~/.bun/bin/bunmicro
 ```
 
+## Option 3: Git + Bun
+- git clone https://github.com/jjtseng93/bunmicro.git
+- cd bunmicro
+- bun src/index.js
+
 # Basic features 
 - Inherited from the original Golang micro
 - Only features listed here are implemented
