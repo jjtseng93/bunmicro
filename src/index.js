@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 
+let mainPromise = globalThis.assetsLoaderPromise ||
+                  Promise.resolve();
+
 const jsStart = globalThis.Bun ? Bun.nanoseconds() : Date.now() * 1e6;
 const checkpoints = [
   { name: "Bun Engine Boot", time: 0 },
@@ -99,6 +102,7 @@ import { Config } from "./config/config.js";
 import { defaultAllSettings, OPTION_CHOICES, LOCAL_SETTINGS } from "./config/defaults.js";
 import { cleanConfig } from "./config/clean.js";
 import { RuntimeRegistry, RTColorscheme, RTHelp } from "./runtime/registry.js";
+import { assetPath, hasInternalAssets, listInternalAssetDirs, readInternalAssetText } from "./runtime/assets.js";
 import { PluginManager } from "./plugins/manager.js";
 import { JsPluginManager, buildMicroGlobal, runAction, listActions } from "./plugins/js-bridge.js";
 import { Colorscheme } from "./config/colorscheme.js";
@@ -116,6 +120,7 @@ import { writeBackup, removeBackup, applyBackup } from "./buffer/backup.js";
 import { createInterface } from "node:readline/promises";
 
 import pkg from "../package.json" with { type: "json" };
+import { isCompiledBinary, resolveCompiledBaseDir } from "./runtime/compiled.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -159,7 +164,10 @@ Windows
 }
 
 const VERSION = pkg.version;
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const IS_COMPILED = isCompiledBinary(process.argv);
+const REPO_ROOT = IS_COMPILED
+  ? resolveCompiledBaseDir({ argv: process.argv })
+  : resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const decoder = new TextDecoder();
 let _activeTtyStream = null; // set in App.start() for use by the global error handler
 
@@ -6703,12 +6711,12 @@ async function loadBuffers(files, command) {
 }
 
 async function printReadmeDocs() {
-  const readme = await Bun.file(join(REPO_ROOT, "README.md")).text();
+  const readme = readInternalAssetText("README.md") ?? await Bun.file(join(REPO_ROOT, "README.md")).text();
   process.stdout.write(Bun.markdown.ansi(readme, { hyperlinks: true }));
 }
 
 async function printChangelogDocs() {
-  const changelog = await Bun.file(join(REPO_ROOT, "CHANGELOG.md")).text();
+  const changelog = readInternalAssetText("CHANGELOG.md") ?? await Bun.file(join(REPO_ROOT, "CHANGELOG.md")).text();
   process.stdout.write(Bun.markdown.ansi(changelog, { hyperlinks: true }));
 }
 
@@ -6783,17 +6791,30 @@ async function main() {
 
   if (flags.plugin === "list") {
     const luaList = plugins.list();
-    const jsDirs = [
-      { dir: join(REPO_ROOT, "runtime", "jsplugins"), builtin: true },
-      { dir: join(config.configDir, "jsplug"),        builtin: false },
-    ];
     const jsItems = [];
-    for (const { dir, builtin } of jsDirs) {
-      if (!existsSync(dir)) continue;
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const builtinJsPluginNames = hasInternalAssets()
+      ? listInternalAssetDirs(assetPath("runtime", "jsplugins"))
+      : [];
+    if (builtinJsPluginNames.length > 0) {
+      for (const name of builtinJsPluginNames) {
+        jsItems.push({ name, builtin: true });
+      }
+    } else {
+      const builtinJsDir = join(REPO_ROOT, "runtime", "jsplugins");
+      if (existsSync(builtinJsDir)) {
+        for (const entry of readdirSync(builtinJsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          if (existsSync(join(builtinJsDir, entry.name, `${entry.name}.js`)))
+            jsItems.push({ name: entry.name, builtin: true });
+        }
+      }
+    }
+    const userJsDir = join(config.configDir, "jsplug");
+    if (existsSync(userJsDir)) {
+      for (const entry of readdirSync(userJsDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        if (existsSync(join(dir, entry.name, `${entry.name}.js`)))
-          jsItems.push({ name: entry.name, builtin });
+        if (existsSync(join(userJsDir, entry.name, `${entry.name}.js`)))
+          jsItems.push({ name: entry.name, builtin: false });
       }
     }
     const fmtTag = (p) => p.builtin ? " *(built-in)*" : "";
@@ -7380,6 +7401,10 @@ async function catFiles(files, colorscheme, syntaxDefinitions, encoding = DEFAUL
   }
 }
 
+
+mainPromise.then(r=>{
+
+
 main().catch((error) => {
   try {
     (_activeTtyStream ?? process.stdin).setRawMode?.(false);
@@ -7389,3 +7414,6 @@ main().catch((error) => {
     process.exit(1);
   }
 });
+
+
+})

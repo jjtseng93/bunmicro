@@ -1,14 +1,49 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join, basename, extname } from "node:path";
+import { dirname, join, basename, extname } from "node:path";
+import { pathToFileURL } from "node:url";
+import { tmpdir } from "node:os";
+import { assetPath, hasInternalAssets, listInternalAssetDirs, listInternalAssetPaths, readInternalAssetBytes } from "../runtime/assets.js";
 import { newMessage, newMessageAtLine, MTError, MTWarning, MTInfo } from "../buffer/message.js";
 import { Loc } from "../buffer/loc.js";
 
 // ── Action registry ──────────────────────────────────────────────────────────
 
 const ACTIONS = new Map();
+const INTERNAL_JSPLUGIN_STAGE_ROOT = join(tmpdir(), "bunmicro-jsplugins");
+let internalJsPluginStagePromise = null;
 
 function reg(name, fn) { ACTIONS.set(name, fn); }
+
+function stageInternalJsPlugins() {
+  if (!internalJsPluginStagePromise) {
+    internalJsPluginStagePromise = _stageInternalJsPlugins().catch((error) => {
+      console.error("# failed to stage internal JS plugins");
+      console.error(error);
+      return null;
+    });
+  }
+  return internalJsPluginStagePromise;
+}
+
+async function _stageInternalJsPlugins() {
+  const prefix = assetPath("runtime", "jsplugins");
+  const paths = listInternalAssetPaths(prefix);
+  if (paths.length === 0) return null;
+
+  mkdirSync(INTERNAL_JSPLUGIN_STAGE_ROOT, { recursive: true });
+  await Bun.write(join(INTERNAL_JSPLUGIN_STAGE_ROOT, "package.json"), JSON.stringify({ type: "module" }));
+
+  for (const assetPathName of paths) {
+    const bytes = readInternalAssetBytes(assetPathName);
+    if (!bytes) continue;
+    const stagedPath = join(INTERNAL_JSPLUGIN_STAGE_ROOT, ...assetPathName.split("/"));
+    mkdirSync(dirname(stagedPath), { recursive: true });
+    await Bun.write(stagedPath, bytes);
+  }
+
+  return INTERNAL_JSPLUGIN_STAGE_ROOT;
+}
 
 function _actIndentStr(buf) {
   if (buf?.Settings?.tabstospaces) return " ".repeat(buf?.Settings?.tabsize ?? 4);
@@ -550,6 +585,10 @@ export class JsPluginManager {
   // Scan and load all JS plugins from given directories
   async loadFrom(dirs) {
     for (const { dir, builtin } of dirs) {
+      if (builtin && hasInternalAssets()) {
+        const loadedFromAssets = await this._loadFromInternalAssets(dir, builtin);
+        if (loadedFromAssets) continue;
+      }
       if (!existsSync(dir)) continue;
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
@@ -560,6 +599,30 @@ export class JsPluginManager {
         await this._loadFile(mainJs, entry.name, builtin);
       }
     }
+  }
+
+  async _loadFromInternalAssets(dir, builtin) {
+    const prefix = assetPath("runtime", "jsplugins");
+    const stageRoot = await stageInternalJsPlugins();
+    if (!stageRoot) return false;
+
+    const pluginNames = listInternalAssetDirs(prefix);
+    if (pluginNames.length === 0) return false;
+
+    let loadedAny = false;
+    for (const pluginName of pluginNames) {
+      const stagedMainPath = join(stageRoot, prefix, pluginName, `${pluginName}.js`);
+      if (!existsSync(stagedMainPath)) continue;
+      try {
+        await import(pathToFileURL(stagedMainPath).href);
+        this._loaded.push({ path: assetPath(prefix, pluginName, `${pluginName}.js`), name: pluginName, builtin, loaded: true });
+        loadedAny = true;
+      } catch (e) {
+        this._loaded.push({ path: assetPath(prefix, pluginName, `${pluginName}.js`), name: pluginName, builtin, loaded: false, error: e.message });
+        console.error(`[jsplugin] failed to load ${pluginName}: ${e.message}`);
+      }
+    }
+    return loadedAny;
   }
 
   async _loadFile(path, name, builtin) {

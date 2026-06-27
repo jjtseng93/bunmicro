@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, sep } from "node:path";
 import { fetchHttp, downloadFile } from "../platform/commands.js";
 import { extractAndStrip } from "../platform/archive.js";
 import { createLuaEngine } from "../lua/engine.js";
+import { assetPath, hasInternalAssets, internalAssetSource, listInternalAssetDirs, listInternalAssetPaths, readInternalAssetText } from "../runtime/assets.js";
 import { execCommand, runBackgroundShell, runCommand } from "../shell/shell.js";
 import { Loc } from "../buffer/loc.js";
 import { BTDefault, BTHelp, BTInfo, BTLog, BTRaw, BTScratch, byteOffset, BufferCore } from "../buffer/buffer.js";
@@ -107,10 +108,24 @@ export class PluginManager {
   }
 
   async scanBuiltinPlugins() {
+    const userNames = new Set(this.plugins.map((plugin) => plugin.name));
+    const internalPrefix = assetPath("runtime", "plugins");
+
+    if (hasInternalAssets()) {
+      const entries = listInternalAssetDirs(internalPrefix);
+      if (entries.length > 0) {
+        for (const entryName of entries) {
+          if (userNames.has(entryName)) continue;
+          const plugin = await scanPluginDirectoryFromAssets(assetPath(internalPrefix, entryName), entryName, true);
+          if (plugin) this.plugins.push(plugin);
+        }
+        return;
+      }
+    }
+
     const plugdir = join(this.repoRoot, "runtime", "plugins");
     if (!existsSync(plugdir)) return;
     const entries = await readdir(plugdir, { withFileTypes: true });
-    const userNames = new Set(this.plugins.map((plugin) => plugin.name));
     for (const entry of entries) {
       if (!entry.isDirectory() || userNames.has(entry.name)) continue;
       const plugin = await scanPluginDirectory(join(plugdir, entry.name), entry.name, true);
@@ -412,6 +427,16 @@ export class PluginManager {
   addPluginRuntimeFile(plugin, kind, relpath) {
     const owner = this.plugins.find((p) => p.name === plugin);
     if (!owner) return;
+    const internalPath = assetPath("runtime", "plugins", owner.dirName, relpath);
+    const internalText = readInternalAssetText(internalPath);
+    if (internalText != null) {
+      this.runtime.files[kind].push({
+        name: basename(relpath, extname(relpath)),
+        path: internalPath,
+        text: async () => internalText,
+      });
+      return;
+    }
     const path = join(this.repoRoot, "runtime", "plugins", owner.dirName, relpath);
     this.runtime.files[kind].push({ name: basename(path, extname(path)), path, text: async () => await readFile(path, "utf8") });
   }
@@ -589,11 +614,41 @@ async function scanPluginDirectory(dir, defaultName, builtin) {
 }
 
 function fileSource(path) {
+  const internalText = readInternalAssetText(path);
+  if (internalText != null) {
+    return {
+      name: basename(path),
+      path,
+      text: async () => internalText,
+    };
+  }
   return {
     name: basename(path),
     path,
     text: () => readFile(path, "utf8"),
   };
+}
+
+async function scanPluginDirectoryFromAssets(prefix, defaultName, builtin) {
+  const entries = listInternalAssetPaths(prefix);
+  const srcs = [];
+  let info = null;
+  let name = defaultName;
+  const base = `${assetPath(prefix)}/`;
+
+  for (const fullPath of entries) {
+    const rel = fullPath.slice(base.length);
+    if (!rel || rel.includes("/")) continue;
+    if (rel.endsWith(".lua")) {
+      srcs.push(internalAssetSource(fullPath));
+    } else if (rel.endsWith(".json")) {
+      const parsed = JSON.parse(readInternalAssetText(fullPath) ?? "null");
+      info = Array.isArray(parsed) ? parsed[0] : parsed;
+      if (info?.Name) name = info.Name;
+    }
+  }
+  if (!VALID_PLUGIN_NAME.test(name) || srcs.length === 0) return null;
+  return new Plugin({ name, dirName: basename(prefix), srcs, info, builtin });
 }
 
 function humanizeBytes(bytes) {

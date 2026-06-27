@@ -1,21 +1,55 @@
+import { existsSync } from "node:fs";
+import { readInternalAssetBytes } from "../runtime/assets.js";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { isCompiledBinary, resolveCompiledBaseDir } from "../runtime/compiled.js";
+
+const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
 export async function createLuaEngine() {
-  const wasmoon = await tryImport("wasmoon");
+  let wasmoon = null;
+  try {
+    wasmoon = await import("wasmoon");
+  } catch (error) {
+    if (
+      error?.code !== "ERR_MODULE_NOT_FOUND" &&
+      !/Cannot find package/.test(String(error?.message))
+    ) {
+      throw error;
+    }
+  }
   if (!wasmoon?.LuaFactory) {
     throw new Error("Lua support requires the WASM runtime `wasmoon`. Install it with `bun add wasmoon`.");
   }
 
-  const factory = new wasmoon.LuaFactory();
+  const wasmLocation = await resolveLuaWasmLocation();
+  const factory = new wasmoon.LuaFactory(wasmLocation);
   const lua = await factory.createEngine();
   return new WasmoonEngine(lua);
 }
 
-async function tryImport(name) {
-  try {
-    return await import(name);
-  } catch (error) {
-    if (error?.code === "ERR_MODULE_NOT_FOUND" || /Cannot find package/.test(String(error?.message))) return null;
-    throw error;
+async function resolveLuaWasmLocation() {
+  const wasmBytes = readInternalAssetBytes("node_modules/wasmoon/dist/glue.wasm");
+  if (wasmBytes) {
+    const wasmPath = join(tmpdir(), "bunmicro-wasmoon-glue.wasm");
+    try {
+      const existing = await Bun.file(wasmPath).bytes().catch(() => null);
+      if (!existing || existing.byteLength !== wasmBytes.byteLength) {
+        await Bun.write(wasmPath, wasmBytes);
+      }
+      return wasmPath;
+    } catch (error) {
+      console.error("# failed to stage bundled wasmoon wasm");
+      console.error(error);
+    }
   }
+
+  const fallbackPath = isCompiledBinary(process.argv)
+    ? join(resolveCompiledBaseDir({ argv: process.argv }), "node_modules", "wasmoon", "dist", "glue.wasm")
+    : join(SOURCE_ROOT, "node_modules", "wasmoon", "dist", "glue.wasm");
+
+  return existsSync(fallbackPath) ? fallbackPath : undefined;
 }
 
 class WasmoonEngine {
