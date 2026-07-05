@@ -758,18 +758,25 @@ function usage() {
 async function buildExecutable(target = "") {
   const outfile = resolve(process.cwd(), DEFAULT_BUILD_OUTFILE);
   const normalizedTarget = String(target || "").trim();
+  if(!globalThis.Bun)
+  {
+    console.log("Build exe can only be run by Bun");
+    return 1;
+  }
+  
+  let bunBin=Bun.which('bun') || process.argv0;
 
   const steps = [
     {
       label: "Pack assets",
       cwd: SINGLE_EXE_DIR,
-      cmd: "bun",
+      cmd: bunBin,
       args: ["./packAssets.sh"],
     },
     {
       label: "Compile executable",
       cwd: process.cwd(),
-      cmd: "bun",
+      cmd: bunBin,
       args: [
         "build",
         "--compile",
@@ -784,7 +791,10 @@ async function buildExecutable(target = "") {
 
   for (const step of steps) {
     console.log('');
-    console.log(Bun.markdown.ansi('## '+step.label));
+    console.log(
+      Bun?.markdown?.ansi?.('## '+step.label) ||
+      step.label
+    );
   
     const result = child_process.spawnSync(step.cmd, step.args, {
       cwd: step.cwd,
@@ -793,13 +803,16 @@ async function buildExecutable(target = "") {
     });
     
     console.log("");
-    console.log(Bun.markdown.ansi(
+    console.log(Bun?.markdown?.ansi?.(
       '- Status: '+result.status+' for '+step.label
-    ));
+    )||result.status);
     
   }
 
-  console.log(`Built executable: ${outfile}`);
+  if(await Bun.file(outfile).exists())
+    console.log(`Built executable: ${outfile}`);
+  else
+    console.log(`Error while building executable: ${outfile}`);
 }
 
 function parseInput(args) {
