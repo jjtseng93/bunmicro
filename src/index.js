@@ -750,7 +750,11 @@ function usage() {
     "--remote-debugging-port=PORT",
     "    Start CDP (Chrome DevTools Protocol) server on PORT at launch",
     "--remote-debugging-address=ADDRESS",
-    "    Bind CDP server to ADDRESS (default: 127.0.0.1); use 0.0.0.0 for all interfaces",
+    "    Bind CDP server to ADDRESS (default: 127.0.0.1); use 0.0.0.0 for all interfaces",`
+Experimental:
+  --build-exe                   Build a Bun single-file executable and exit
+  --build-for <target>          Build a Bun single-file executable for target
+    `
 
   ].join("\n");
 }
