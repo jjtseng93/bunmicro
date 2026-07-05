@@ -1,5 +1,6 @@
 # Introduction
-- bunmicro is a Bun JavaScript rewrite of the micro editor originally in Golang
+- bunmicro is a terminal text editor
+- It is a Bun JavaScript rewrite of the Micro text editor, originally written in Golang
 - This project is not affiliated with Bun / Micro
 - .
 - Original project:
